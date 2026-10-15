@@ -44,12 +44,26 @@ export function App() {
 
   useEffect(() => {
     if (state.status === "loading") void boot();
-    return onUnauthorized(() => {
-      events.markUnauthorized();
-      setState((s) => (s.status === "pair" ? s : { status: "unpaired" }));
-    });
+    const toUnpaired = () => setState((s) => (s.status === "pair" ? s : { status: "unpaired" }));
+    const offs = [
+      onUnauthorized(() => {
+        events.markUnauthorized();
+        toUnpaired();
+      }),
+      // Removed by the computer (SSE `revoked`) or a 401 seen by the event stream.
+      events.onState((s) => s === "unauthorized" && toUnpaired()),
+    ];
+    return () => offs.forEach((off) => off());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // While paused, keep checking so the app comes back on its own.
+  useEffect(() => {
+    if (state.status !== "paused") return;
+    const t = window.setInterval(() => void boot(), 5000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.status]);
 
   switch (state.status) {
     case "loading":

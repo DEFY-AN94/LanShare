@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
+mod guard;
 pub mod model;
 pub mod net;
 pub mod pairing;
@@ -25,13 +26,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use axum_server::tls_rustls::RustlsAcceptor;
+use hyper_util::rt::TokioTimer;
+use notify::Watcher;
 use serde_json::json;
 
 use bridge::HostBridge;
 use config::Config;
 use db::Db;
 use events::Audience;
-use paths::Sandbox;
+use paths::{Sandbox, unsafe_root_reason};
 use state::{AppState, Shared, StateParts};
 use tls::Tls;
 
@@ -66,7 +70,10 @@ impl ServerHandle {
 }
 
 fn bind_lan(preferred: u16) -> std::io::Result<TcpListener> {
-    let candidates = (0..10).map(|i| preferred.saturating_add(i)).chain(std::iter::once(0));
+    // Nearby ports first, then jump past whole reserved blocks, then any port.
+    let near = (0..10).map(move |i| preferred.saturating_add(i));
+    let far = (1..10).map(move |i| preferred.saturating_add(i * 100));
+    let candidates = near.chain(far).chain(std::iter::once(0));
     let mut last_err = None;
     for port in candidates {
         match TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)) {
@@ -89,9 +96,43 @@ pub fn host_name() -> String {
     if name.is_empty() { "我的电脑".to_string() } else { name.to_string() }
 }
 
+/// Opens the configured shared folder, falling back to ~/LanShare when it is
+/// missing (unplugged drive, unmounted share) or unsafe to expose.
+fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &std::path::Path) -> Result<Sandbox> {
+    let default = home.join("LanShare");
+    let configured = config.shared_root.clone();
+    let usable = if configured == default {
+        None
+    } else if let Some(reason) = unsafe_root_reason(&configured, home, data_dir) {
+        tracing::warn!("shared folder {} is not allowed ({reason}); using {}", configured.display(), default.display());
+        None
+    } else {
+        match Sandbox::existing(&configured) {
+            Ok(sb) => Some(sb),
+            Err(e) => {
+                // Not saved over: the folder comes back once the drive is reconnected.
+                tracing::warn!("shared folder {} is unavailable ({e}); using {} for now", configured.display(), default.display());
+                None
+            }
+        }
+    };
+    let sandbox = match usable {
+        Some(sb) => sb,
+        None => {
+            let sb = Sandbox::new(&default).with_context(|| format!("create {}", default.display()))?;
+            if configured == default || unsafe_root_reason(&configured, home, data_dir).is_some() {
+                config.shared_root = sb.root().to_path_buf();
+            }
+            sb
+        }
+    };
+    Ok(sandbox.with_deny(&[data_dir.to_path_buf()]))
+}
+
 /// Starts both listeners. Must run inside a tokio runtime.
 pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<ServerHandle> {
     std::fs::create_dir_all(&opts.data_dir).with_context(|| format!("create {}", opts.data_dir.display()))?;
+    guard::raise_fd_limit();
     let mut config = Config::load_or_default(&opts.data_dir, &opts.home_dir);
     if let Some(root) = opts.shared_root {
         config.shared_root = root;
@@ -99,8 +140,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     if let Some(port) = opts.port {
         config.port = port;
     }
-    let sandbox = Sandbox::new(&config.shared_root).with_context(|| format!("open shared folder {}", config.shared_root.display()))?;
-    config.shared_root = sandbox.root().to_path_buf();
+    let sandbox = open_shared_folder(&mut config, &opts.home_dir, &opts.data_dir)?;
     if let Err(e) = config.save(&opts.data_dir) {
         tracing::warn!("could not save config: {e}");
     }
@@ -113,6 +153,11 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
 
     let lan_listener = bind_lan(config.port).context("bind LAN port")?;
     let lan_port = lan_listener.local_addr()?.port();
+    if lan_port != config.port {
+        // Keep using the port that worked so phone bookmarks survive restarts.
+        config.port = lan_port;
+        let _ = config.save(&opts.data_dir);
+    }
     let local_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, opts.local_port)).context("bind loopback port")?;
     local_listener.set_nonblocking(true)?;
     let local_port = local_listener.local_addr()?.port();
@@ -120,6 +165,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     let state = AppState::new(StateParts {
         db,
         data_dir: opts.data_dir.clone(),
+        home_dir: opts.home_dir.clone(),
         config,
         sandbox,
         local_token: util::random_token(),
@@ -132,7 +178,16 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     });
 
     let lan_app = routes::lan_router(state.clone());
-    let server = axum_server::from_tcp_rustls(lan_listener, state.tls.rustls_config())?;
+    // Non-LAN peers and connection floods are cut off before the TLS handshake.
+    let acceptor = RustlsAcceptor::new(state.tls.rustls_config()).acceptor(guard::LanAcceptor::default());
+    let mut server = axum_server::from_tcp(lan_listener)?.acceptor(acceptor);
+    server.http_builder().http1().timer(TokioTimer::new()).header_read_timeout(Duration::from_secs(20));
+    server
+        .http_builder()
+        .http2()
+        .timer(TokioTimer::new())
+        .keep_alive_interval(Duration::from_secs(30))
+        .keep_alive_timeout(Duration::from_secs(20));
     tokio::spawn(async move {
         if let Err(e) = server.serve(lan_app.into_make_service_with_connect_info::<SocketAddr>()).await {
             tracing::error!("LAN server stopped: {e}");
@@ -148,16 +203,74 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     });
 
     tokio::spawn(watch_network(state.clone()));
+    watch_shared_folder(&state);
+    let root = state.sandbox().root().to_path_buf();
+    tokio::task::spawn_blocking(move || transfer::sweep_tree(&root, 4));
     tracing::info!("LanShare listening on port {lan_port} (LAN, HTTPS) and 127.0.0.1:{local_port} (window)");
     Ok(ServerHandle { state })
 }
 
-/// Follows Wi-Fi changes: refreshes the address list and the certificate.
+/// (Re)starts watching the shared folder so edits made on the computer —
+/// in Finder or any other app — refresh open file lists on every device.
+pub fn watch_shared_folder(state: &Shared) {
+    let root = state.sandbox().root().to_path_buf();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<std::path::PathBuf>();
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res {
+            for p in ev.paths {
+                let _ = tx.send(p);
+            }
+        }
+    })
+    .and_then(|mut w| w.watch(&root, notify::RecursiveMode::Recursive).map(|_| w));
+    let watcher = match watcher {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("cannot watch shared folder: {e}");
+            return;
+        }
+    };
+    // Replacing the old watcher drops it, which closes its channel and ends its task.
+    *state.watcher.lock().unwrap() = Some(watcher);
+    let st = state.clone();
+    tokio::spawn(async move {
+        while let Some(first) = rx.recv().await {
+            // Coalesce bursts (copying a folder fires many events).
+            let mut changed = vec![first];
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            while let Ok(p) = rx.try_recv() {
+                changed.push(p);
+            }
+            let sandbox = st.sandbox();
+            let mut dirs: Vec<String> = changed
+                .iter()
+                .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+                .filter_map(|p| p.parent().and_then(|d| sandbox.relative(d)))
+                .collect();
+            dirs.sort();
+            dirs.dedup();
+            for dir in dirs {
+                st.emit_files_changed(&dir);
+            }
+        }
+    });
+}
+
+/// Follows Wi-Fi changes (address list + certificate) and renews the
+/// certificate before it expires.
 async fn watch_network(state: Shared) {
     let mut tick = tokio::time::interval(Duration::from_secs(20));
+    let mut ticks: u64 = 0;
     tick.tick().await;
     loop {
         tick.tick().await;
+        ticks += 1;
+        if ticks.is_multiple_of(180) {
+            let st = state.clone();
+            if let Ok(Err(e)) = tokio::task::spawn_blocking(move || st.tls.ensure_fresh()).await {
+                tracing::error!("certificate renewal failed: {e:#}");
+            }
+        }
         let Ok(addresses) = tokio::task::spawn_blocking(net::lan_addresses).await else { continue };
         if !state.set_addresses(addresses) {
             continue;

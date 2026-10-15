@@ -3,8 +3,11 @@
 
 import { api } from "./api";
 
-export function hostOpen(path: string) {
-  return api.post("/api/host/open", { path });
+/** Opens with the default app. Apps/scripts are only revealed in the folder. */
+export async function hostOpen(path: string, notify?: (msg: string) => void) {
+  const res = await api.post<{ action?: string }>("/api/host/open", { path });
+  if (res?.action === "revealed") notify?.("为了安全，程序和脚本类文件不会直接打开，已在文件夹中显示");
+  return res;
 }
 
 export function hostReveal(path: string) {

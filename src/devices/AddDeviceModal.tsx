@@ -6,6 +6,11 @@ import { api } from "../lib/api";
 import { events } from "../lib/events";
 import type { PairingSession } from "../lib/types";
 
+/** First 8 bytes in the "AB CD …" form iOS shows in certificate details. */
+export function shortFingerprint(hex: string) {
+  return (hex.match(/.{2}/g) ?? []).slice(0, 8).join(" ").toUpperCase();
+}
+
 export function AddDeviceModal({ onClose }: { onClose: () => void }) {
   const [session, setSession] = useState<PairingSession | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +105,10 @@ export function AddDeviceModal({ onClose }: { onClose: () => void }) {
                 </label>
               )}
               <p className="muted small">{expired ? "二维码已过期" : `二维码 ${remaining} 秒后过期，只能使用一次`}</p>
+              <div className="fingerprint-box">
+                <span className="muted small">在 iPhone 上安装证书前，核对证书详情里的 SHA-256 开头是否为：</span>
+                <code className="fingerprint-short">{shortFingerprint(session!.ca_fingerprint)}</code>
+              </div>
             </div>
           </div>
         )}

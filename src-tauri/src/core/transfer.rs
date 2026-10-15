@@ -15,6 +15,7 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use tower::ServiceExt as _;
 use tower_http::services::ServeFile;
 
+use super::auth::Session;
 use super::error::{ApiError, ApiResult};
 use super::paths::unique_path;
 use super::state::Shared;
@@ -76,8 +77,9 @@ fn clone_head(parts: &Parts, strip_range: bool) -> Request {
     r
 }
 
-/// Serves `path` (already sandbox-checked) with Range/ETag support.
-pub async fn serve_path(path: &Path, file_name: &str, want_inline: bool, parts: &Parts) -> Response {
+/// Serves `path` (already sandbox-checked) with Range/ETag support. The body
+/// stops mid-way if sharing is paused or the device is removed.
+pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_name: &str, want_inline: bool, parts: &Parts) -> Response {
     let (inline_ok, mime) = inline_policy(file_name);
     let inline = want_inline && inline_ok;
     let svc = ServeFile::new_with_mime(path, &mime).ignore_multi_range_requests(true);
@@ -104,7 +106,17 @@ pub async fn serve_path(path: &Path, file_name: &str, want_inline: bool, parts: 
         }
         _ => res,
     };
-    let mut res: Response = res.map(Body::new);
+    let (st, sess) = (state.clone(), session.clone());
+    let mut res: Response = res.map(move |body| {
+        let guarded = Body::new(body).into_data_stream().map(move |chunk| {
+            if st.transfer_allowed(&sess) {
+                chunk.map_err(std::io::Error::other)
+            } else {
+                Err(std::io::Error::other("transfer cancelled"))
+            }
+        });
+        Body::from_stream(guarded)
+    });
     let ok = matches!(res.status(), StatusCode::OK | StatusCode::PARTIAL_CONTENT);
     let h = res.headers_mut();
     if ok {
@@ -120,54 +132,106 @@ pub async fn serve_path(path: &Path, file_name: &str, want_inline: bool, parts: 
     res
 }
 
-/// Removes upload leftovers from crashed or aborted transfers (older than a day).
-fn sweep_stale_parts(dir: &Path) {
+fn is_part_file(name: &str) -> bool {
+    name.starts_with(".lanshare-") && name.ends_with(".part")
+}
+
+/// Removes upload leftovers from crashed or aborted transfers older than `max_age`.
+fn sweep_stale_parts(dir: &Path, max_age: Duration) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let cutoff = SystemTime::now() - Duration::from_secs(24 * 3600);
+    let cutoff = SystemTime::now() - max_age;
     for e in rd.flatten() {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(".lanshare-") && name.ends_with(".part")
-            && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff)
-        {
+        if is_part_file(&e.file_name().to_string_lossy()) && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff) {
             let _ = std::fs::remove_file(e.path());
         }
     }
 }
 
+/// At startup: clear leftovers a crash or quit left behind, a few levels deep.
+pub fn sweep_tree(root: &Path, depth: usize) {
+    sweep_stale_parts(root, Duration::from_secs(60));
+    if depth == 0 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        if !name.to_string_lossy().starts_with('.') && e.file_type().is_ok_and(|t| t.is_dir()) {
+            sweep_tree(&e.path(), depth - 1);
+        }
+    }
+}
+
+/// Deletes the temp file unless the upload completed (also when the request
+/// future is dropped mid-transfer).
+struct TempFile {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Files received from a phone get the same "downloaded from elsewhere" mark
+/// a browser would add, so macOS checks them before opening or running them.
+#[cfg(target_os = "macos")]
+pub fn mark_quarantined(path: &Path) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let value = format!("0081;{secs:08x};LanShare;");
+    let (Ok(p), Ok(name)) = (CString::new(path.as_os_str().as_bytes()), CString::new("com.apple.quarantine")) else { return };
+    // SAFETY: valid NUL-terminated strings and a buffer of the given length.
+    unsafe {
+        libc::setxattr(p.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0);
+    }
+}
+
+/// Windows: the Zone.Identifier stream makes SmartScreen treat it as downloaded.
+#[cfg(windows)]
+pub fn mark_quarantined(path: &Path) {
+    let mut ads = path.as_os_str().to_owned();
+    ads.push(":Zone.Identifier");
+    let _ = std::fs::write(PathBuf::from(ads), "[ZoneTransfer]\r\nZoneId=3\r\n");
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn mark_quarantined(_path: &Path) {}
+
 /// Streams the request body into `dir/name` (renamed `name (1)` etc. on
 /// collision). Writes to a hidden temp file first so a half-finished upload
 /// never appears under its real name.
-pub async fn receive_upload(state: &Shared, body: Body, dir: &Path, name: &str) -> ApiResult<(PathBuf, u64)> {
+pub async fn receive_upload(state: &Shared, session: &Session, body: Body, dir: &Path, name: &str) -> ApiResult<(PathBuf, u64)> {
     let dir_owned = dir.to_path_buf();
-    let _ = tokio::task::spawn_blocking(move || sweep_stale_parts(&dir_owned)).await;
+    let _ = tokio::task::spawn_blocking(move || sweep_stale_parts(&dir_owned, Duration::from_secs(24 * 3600))).await;
 
-    let tmp = dir.join(format!(".lanshare-{}.part", random_hex(8)));
-    let file = tokio::fs::File::create(&tmp).await?;
+    let mut tmp = TempFile { path: dir.join(format!(".lanshare-{}.part", random_hex(8))), keep: false };
+    let file = tokio::fs::File::create(&tmp.path).await?;
     let mut out = BufWriter::with_capacity(1 << 20, file);
     let mut stream = body.into_data_stream();
     let mut total: u64 = 0;
-    let result: ApiResult<()> = async {
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| ApiError::bad_request("上传中断"))?;
-            total += chunk.len() as u64;
-            out.write_all(&chunk).await?;
+    while let Some(chunk) = stream.next().await {
+        if !state.transfer_allowed(session) {
+            return Err(ApiError::new(axum::http::StatusCode::SERVICE_UNAVAILABLE, "传输已被电脑端停止"));
         }
-        out.flush().await?;
-        Ok(())
+        let chunk = chunk.map_err(|_| ApiError::bad_request("上传中断"))?;
+        total += chunk.len() as u64;
+        out.write_all(&chunk).await?;
     }
-    .await;
+    out.flush().await?;
     drop(out);
-    if let Err(e) = result {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e);
-    }
 
     let _guard = state.upload_lock.lock().await;
     let target = unique_path(dir, name);
-    if let Err(e) = tokio::fs::rename(&tmp, &target).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e.into());
+    tokio::fs::rename(&tmp.path, &target).await?;
+    tmp.keep = true;
+    if !session.is_host() {
+        mark_quarantined(&target);
     }
     Ok((target, total))
 }

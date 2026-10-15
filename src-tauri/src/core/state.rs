@@ -1,14 +1,15 @@
 //! Shared server state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use super::auth::Session;
 use super::bridge::HostBridge;
 use super::config::Config;
 use super::db::{Db, MessageRow};
@@ -24,6 +25,7 @@ pub const SENT_DIR: &str = "已发送";
 pub struct AppState {
     pub db: Db,
     pub data_dir: PathBuf,
+    pub home_dir: PathBuf,
     pub config: Mutex<Config>,
     sandbox: RwLock<Sandbox>,
     pub events: broadcast::Sender<ServerEvent>,
@@ -40,6 +42,10 @@ pub struct AppState {
     addresses: RwLock<Vec<Address>>,
     /// Serializes "pick a free name + rename" so two uploads never clobber each other.
     pub upload_lock: tokio::sync::Mutex<()>,
+    /// Devices removed while this process runs; their in-flight transfers stop.
+    revoked: Mutex<HashSet<String>>,
+    /// Watches the shared folder so changes made in Finder reach the clients.
+    pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -47,6 +53,7 @@ pub type Shared = Arc<AppState>;
 pub struct StateParts {
     pub db: Db,
     pub data_dir: PathBuf,
+    pub home_dir: PathBuf,
     pub config: Config,
     pub sandbox: Sandbox,
     pub local_token: String,
@@ -64,6 +71,7 @@ impl AppState {
         Arc::new(AppState {
             db: p.db,
             data_dir: p.data_dir,
+            home_dir: p.home_dir,
             config: Mutex::new(p.config),
             sandbox: RwLock::new(p.sandbox),
             events,
@@ -78,7 +86,33 @@ impl AppState {
             host_name: p.host_name,
             addresses: RwLock::new(p.addresses),
             upload_lock: tokio::sync::Mutex::new(()),
+            revoked: Mutex::new(HashSet::new()),
+            watcher: Mutex::new(None),
         })
+    }
+
+    /// Marks a removed device so transfers it already started are cut off.
+    pub fn revoke(&self, device_id: &str) {
+        self.revoked.lock().unwrap().insert(device_id.to_string());
+    }
+
+    /// Checked for every chunk of a running upload or download.
+    pub fn transfer_allowed(&self, session: &Session) -> bool {
+        match session {
+            Session::Host => true,
+            Session::Device { id, .. } => !self.is_paused() && !self.revoked.lock().unwrap().contains(id),
+        }
+    }
+
+    /// Finds a chat attachment under the folder it was saved in, which may
+    /// differ from the current shared folder.
+    pub fn attachment_path(&self, root: Option<&str>, rel: &str) -> Option<PathBuf> {
+        let current = self.sandbox();
+        let sandbox = match root {
+            Some(r) if Path::new(r) != current.root() => Sandbox::existing(Path::new(r)).ok()?.with_deny(std::slice::from_ref(&self.data_dir)),
+            _ => current,
+        };
+        sandbox.resolve_file(rel).ok()
     }
 
     pub fn sandbox(&self) -> Sandbox {
@@ -168,7 +202,7 @@ impl AppState {
     pub fn message_out(&self, m: MessageRow) -> MessageOut {
         let file = match (m.kind.as_str(), m.file_path) {
             ("file", Some(path)) => {
-                let exists = self.sandbox().resolve_file(&path).is_ok();
+                let exists = self.attachment_path(m.file_root.as_deref(), &path).is_some();
                 Some(FileRef {
                     name: m.file_name.unwrap_or_else(|| path.rsplit('/').next().unwrap_or("").to_string()),
                     path,

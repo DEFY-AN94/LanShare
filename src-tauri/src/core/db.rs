@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS messages (
   file_name TEXT,
   file_size INTEGER,
   mime TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  file_root TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_by_device ON messages(device_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id
@@ -55,6 +56,8 @@ pub struct MessageRow {
     pub file_size: Option<i64>,
     pub mime: Option<String>,
     pub created_at: i64,
+    /// Shared-folder root the attachment was saved under (absolute path).
+    pub file_root: Option<String>,
 }
 
 pub struct NewMessage<'a> {
@@ -68,6 +71,7 @@ pub struct NewMessage<'a> {
     pub file_size: Option<i64>,
     pub mime: Option<&'a str>,
     pub created_at: i64,
+    pub file_root: Option<&'a str>,
 }
 
 pub struct Db {
@@ -75,7 +79,7 @@ pub struct Db {
 }
 
 const DEVICE_COLS: &str = "id, name, token_hash, can_write, created_at, last_seen_at";
-const MESSAGE_COLS: &str = "id, device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at";
+const MESSAGE_COLS: &str = "id, device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root";
 
 fn device_from(row: &Row) -> rusqlite::Result<DeviceRow> {
     Ok(DeviceRow {
@@ -101,6 +105,7 @@ fn message_from(row: &Row) -> rusqlite::Result<MessageRow> {
         file_size: row.get(8)?,
         mime: row.get(9)?,
         created_at: row.get(10)?,
+        file_root: row.get(11)?,
     })
 }
 
@@ -117,6 +122,12 @@ impl Db {
     fn init(conn: Connection) -> Result<Db> {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
         conn.execute_batch(SCHEMA)?;
+        // Databases created before attachments remembered their root.
+        let has_root: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'file_root'", [], |r| r.get(0))?;
+        if has_root == 0 {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN file_root TEXT;")?;
+        }
         Ok(Db { conn: Mutex::new(conn) })
     }
 
@@ -186,8 +197,8 @@ impl Db {
     pub fn insert_message(&self, m: &NewMessage) -> Result<(MessageRow, bool)> {
         let conn = self.conn();
         let inserted = conn.execute(
-            "INSERT OR IGNORE INTO messages (device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR IGNORE INTO messages (device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 m.device_id,
                 m.from_host as i64,
@@ -198,7 +209,8 @@ impl Db {
                 m.file_name,
                 m.file_size,
                 m.mime,
-                m.created_at
+                m.created_at,
+                m.file_root
             ],
         )?;
         let row = if inserted > 0 {
@@ -307,6 +319,7 @@ mod tests {
             file_size: None,
             mime: None,
             created_at: 10,
+            file_root: None,
         }
     }
 

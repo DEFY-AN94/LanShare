@@ -13,7 +13,8 @@ interface Props {
 
 type Stage = "form" | "waiting" | "done" | "failed";
 
-export function PairPage({ token, notPaired }: Props) {
+export function PairPage({ token: initialToken, notPaired }: Props) {
+  const [token, setToken] = useState(initialToken);
   const [name, setName] = useState(guessDeviceName());
   const [code, setCode] = useState("");
   const [stage, setStage] = useState<Stage>("form");
@@ -106,6 +107,18 @@ export function PairPage({ token, notPaired }: Props) {
               <button className="btn btn-primary btn-block" disabled={busy || (!token && code.length !== 6)}>
                 {busy ? "正在请求…" : "请求连接"}
               </button>
+              {token && (
+                <button
+                  type="button"
+                  className="link-btn pair-switch"
+                  onClick={() => {
+                    setToken(null);
+                    setError(null);
+                  }}
+                >
+                  二维码过期了？改用 6 位配对码
+                </button>
+              )}
             </form>
           </>
         )}
@@ -127,20 +140,24 @@ export function PairPage({ token, notPaired }: Props) {
           <>
             <h1>没有连上</h1>
             <p className="text-danger">{error}</p>
-            {!token && (
-              <button
-                className="btn btn-primary btn-block"
-                onClick={() => {
-                  setStage("form");
-                  setError(null);
-                }}
-              >
-                重新输入配对码
-              </button>
-            )}
+            <button
+              className="btn btn-primary btn-block"
+              onClick={() => {
+                // The QR token is single-use; continue with the 6-digit code.
+                setToken(null);
+                setStage("form");
+                setError(null);
+              }}
+            >
+              输入配对码重试
+            </button>
+            <p className="muted small">也可以在电脑上重新点「添加设备」，再扫一次二维码。</p>
           </>
         )}
       </div>
+      {stage !== "done" && (
+        <p className="muted small pair-hint">二维码 2 分钟内有效：建议先完成配对，再按下面的步骤安装证书（配对后也能在右上角菜单里找到）。</p>
+      )}
       <CertGuide compact />
     </div>
   );

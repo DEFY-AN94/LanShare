@@ -54,11 +54,12 @@ impl HostBridge for TauriBridge {
     }
 
     fn open_path(&self, path: &Path) -> Result<(), String> {
+        let path = crate::core::paths::shell_path(path);
         self.app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
     }
 
     fn reveal_path(&self, path: &Path) -> Result<(), String> {
-        self.app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+        self.app.opener().reveal_item_in_dir(crate::core::paths::shell_path(path)).map_err(|e| e.to_string())
     }
 
     fn open_url(&self, url: &str) -> Result<(), String> {
@@ -84,6 +85,8 @@ fn create_window(app: &AppHandle, server: &ServerHandle) -> tauri::Result<()> {
         .inner_size(1080.0, 720.0)
         .min_inner_size(820.0, 560.0)
         .center()
+        // Shrink to the monitor's work area (e.g. 1080p laptops at 150% on Windows).
+        .prevent_overflow()
         // Let the page receive HTML5 file drops (drag files into chat / folders).
         .disable_drag_drop_handler()
         // The window only ever shows our own loopback page; links go to the browser.
@@ -133,6 +136,12 @@ fn create_tray(app: &tauri::App, state: Shared) -> tauri::Result<()> {
                 show_main_window(tray.app_handle());
             }
         });
+    // macOS menu bars want a monochrome "template" image; Windows trays use the color icon.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.icon(tauri::include_image!("./icons/tray.png")).icon_as_template(true);
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon);
     }

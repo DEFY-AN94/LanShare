@@ -81,7 +81,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
 
   const openEntry = (e: FileEntry) => {
     if (e.is_dir) return onNavigate(e.path);
-    if (isHost) return void run(hostOpen(e.path));
+    if (isHost) return void run(hostOpen(e.path, (m) => toast(m)));
     if (isPreviewable(e.name)) browserPreview(downloadUrl(e.path, true));
     else browserDownload(downloadUrl(e.path), e.name);
   };
@@ -117,7 +117,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
     if (e.is_dir) {
       list.push({ label: "打开", icon: "folder", onSelect: () => onNavigate(e.path) });
     } else if (isHost) {
-      list.push({ label: "用默认程序打开", icon: "external", onSelect: () => void run(hostOpen(e.path)) });
+      list.push({ label: "用默认程序打开", icon: "external", onSelect: () => void run(hostOpen(e.path, (m) => toast(m))) });
     } else {
       if (isPreviewable(e.name)) list.push({ label: "预览", icon: "external", onSelect: () => browserPreview(downloadUrl(e.path, true)) });
       list.push({ label: "下载到「文件」", icon: "download", onSelect: () => browserDownload(downloadUrl(e.path), e.name) });

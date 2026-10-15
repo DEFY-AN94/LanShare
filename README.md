@@ -13,7 +13,7 @@
 
 1. 打开 LanShare。第一次运行时 macOS 可能会问「是否允许 LanShare 接受传入的网络连接」，要点**允许**，否则手机连不上。
 2. 在电脑端点「添加设备」，用 iPhone 相机扫二维码（iPhone 和电脑要连同一个 Wi-Fi）。
-3. Safari 提示「此连接不是私密连接」时，点 显示详细信息 › 访问此网站。想彻底去掉这个提示，可以按页面上的引导安装电脑的证书（推荐）。
+3. Safari 提示「此连接不是私密连接」时，点 显示详细信息 › 访问此网站。想彻底去掉这个提示，配对后按页面引导安装电脑的证书（推荐），安装前核对证书指纹和电脑上显示的一致。
 4. 在 iPhone 上点「请求连接」，核对两边的确认码一致后，在电脑上点「允许」。
 5. 在 Safari 里点分享 › 添加到主屏幕，以后一点就开。
 
@@ -42,7 +42,7 @@ npm run headless -- --local-port 53299
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml                       # Rust 单元测试
-PHONE_OVERRIDE=https://127.0.0.1:53210 scripts/api_smoke.sh .         # 接口端到端测试（需先运行 headless）
+PHONE_OVERRIDE=https://127.0.0.1:39210 scripts/api_smoke.sh .         # 接口端到端测试（需先运行 headless）
 npx tsc                                                               # 前端类型检查
 ```
 
@@ -61,7 +61,8 @@ scripts/api_smoke.sh             接口端到端测试
 ## 数据位置
 
 - 应用数据（数据库、证书、配置）：`~/Library/Application Support/com.lanshare.desktop/`
-- 共享文件夹：默认 `~/LanShare`，聊天里收到的文件在「收件箱」，发给手机的在「已发送」
+- 共享文件夹：默认 `~/LanShare`，聊天里收到的文件在「收件箱」，发给手机的在「已发送」（这两个文件夹只在电脑上可见）
+- 局域网端口：默认 39210（被占用时自动换一个，并记住）
 
 ## 已知限制
 

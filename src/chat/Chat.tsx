@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useDialog } from "../components/Dialog";
 import { ShareSheet } from "../components/ShareSheet";
 import { formatDayTime } from "../lib/format";
 import type { Message } from "../lib/types";
@@ -21,9 +22,10 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
   const conv = useConversation(deviceId);
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
-  const restore = useRef<{ height: number; top: number } | null>(null);
+  const restore = useRef<{ height: number; top: number; firstId: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sharing, setSharing] = useState<Message | null>(null);
+  const dialog = useDialog();
 
   useEffect(() => {
     stickToBottom.current = true;
@@ -36,27 +38,49 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
 
   const total = conv.messages.length + conv.pending.length;
   const lastKey = conv.pending.length ? conv.pending[conv.pending.length - 1].client_id : conv.messages[conv.messages.length - 1]?.id;
+  const firstId = conv.messages[0]?.id;
 
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    if (restore.current) {
+    const r = restore.current;
+    if (r && firstId !== r.firstId) {
       // Older messages were prepended: keep what the user was looking at in place.
-      el.scrollTop = restore.current.top + (el.scrollHeight - restore.current.height);
+      el.scrollTop = r.top + (el.scrollHeight - r.height);
       restore.current = null;
       return;
     }
+    if (r && !conv.loadingOlder) restore.current = null; // load ended without new messages
     scrollToBottom();
-  }, [total, lastKey, scrollToBottom]);
+  }, [total, lastKey, firstId, conv.loadingOlder, scrollToBottom]);
+
+  // Stay pinned to the newest message when the list gets shorter
+  // (keyboard opening on iPhone, composer growing).
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => scrollToBottom());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [scrollToBottom]);
 
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    if (el.scrollTop < 80 && conv.hasMore && !conv.loadingOlder) {
-      restore.current = { height: el.scrollHeight, top: el.scrollTop };
+    if (el.scrollTop < 80 && conv.hasMore && !conv.loadingOlder && firstId !== undefined) {
+      restore.current = { height: el.scrollHeight, top: el.scrollTop, firstId };
       void conv.loadOlder();
     }
+  };
+
+  const discard = async (id: string) => {
+    const p = conv.pending.find((x) => x.client_id === id);
+    if (p?.kind === "text" && p.status === "failed") {
+      const ok = await dialog.confirm({ title: "删除这条未发送的消息？", message: p.text, confirmText: "删除", danger: true });
+      if (!ok) return;
+    }
+    conv.discard(id);
   };
 
   const sendText = (text: string) => {
@@ -104,7 +128,7 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
           );
         })}
         {conv.pending.map((p) => (
-          <PendingBubble key={p.client_id} item={p} onRetry={conv.retry} onDiscard={conv.discard} />
+          <PendingBubble key={p.client_id} item={p} onRetry={conv.retry} onDiscard={(id) => void discard(id)} />
         ))}
       </div>
       <Composer disabled={disabled} onSendText={sendText} onSendFiles={sendFiles} />

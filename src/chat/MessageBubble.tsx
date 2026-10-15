@@ -108,7 +108,7 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
 
   const open = () => {
     if (!file.exists) return toast("文件已被移动或删除", "error");
-    if (isHost) return void run(hostOpen(file.path));
+    if (isHost) return void run(hostOpen(file.path, (m) => toast(m)));
     if (isPreviewable(file.name)) browserPreview(`${url}?inline=1`);
     else browserDownload(url, file.name);
   };
@@ -193,19 +193,19 @@ export function PendingBubble({ item, onRetry, onDiscard }: PendingProps) {
       <div className="pending-status">
         {failed ? (
           <>
-            <button className="link-btn text-danger" onClick={() => onRetry(item.client_id)} title={item.error}>
-              发送失败，点按重试
+            <button className="pending-action text-danger" onClick={() => onRetry(item.client_id)} title={item.error}>
+              <Icon name="refresh" size={14} /> {item.retryable === false ? `发送失败：${item.error ?? ""}` : "发送失败，点按重试"}
             </button>
-            <button className="icon-btn small" aria-label="删除" onClick={() => onDiscard(item.client_id)}>
-              <Icon name="x" size={14} />
+            <button className="pending-action" aria-label="删除" onClick={() => onDiscard(item.client_id)}>
+              <Icon name="x" size={16} />
             </button>
           </>
         ) : (
           <>
             <span className="muted">{item.kind === "file" ? `${pct}%` : "发送中…"}</span>
             {item.kind === "file" && (
-              <button className="icon-btn small" aria-label="取消" onClick={() => onDiscard(item.client_id)}>
-                <Icon name="x" size={14} />
+              <button className="pending-action" aria-label="取消" onClick={() => onDiscard(item.client_id)}>
+                <Icon name="x" size={16} />
               </button>
             )}
           </>

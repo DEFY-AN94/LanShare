@@ -37,6 +37,7 @@ fn env() -> Env {
     let state = AppState::new(StateParts {
         db: Db::open_in_memory().unwrap(),
         data_dir: dir.path().join("data"),
+        home_dir: dir.path().to_path_buf(),
         config: Config { shared_root: sandbox.root().to_path_buf(), port: 53210 },
         sandbox,
         local_token: TOKEN.into(),
@@ -221,6 +222,16 @@ async fn chat_file_upload_is_idempotent() {
     let id = a["id"].as_i64().unwrap();
     let r = send(&e.local, host_req(Method::GET, &format!("/api/messages/{id}/file"), None)).await;
     assert_eq!(&r.body[..], b"data");
+
+    // Chat folders are private to conversations: phones cannot browse them.
+    let root = send(&e.lan, dev_req(Method::GET, "/api/files?path=", Some(&cookie), Body::empty(), false)).await.json();
+    assert!(root["entries"].as_array().unwrap().iter().all(|x| x["name"] != "收件箱"));
+    let enc = "%E6%94%B6%E4%BB%B6%E7%AE%B1"; // 收件箱
+    for uri in [format!("/api/files?path={enc}"), format!("/api/files/download?path={enc}%2FIMG_0001.HEIC")] {
+        assert_eq!(send(&e.lan, dev_req(Method::GET, &uri, Some(&cookie), Body::empty(), false)).await.status, StatusCode::FORBIDDEN);
+    }
+    let host_root = send(&e.local, host_req(Method::GET, "/api/files?path=", None)).await.json();
+    assert!(host_root["entries"].as_array().unwrap().iter().any(|x| x["name"] == "收件箱"));
 }
 
 #[tokio::test]

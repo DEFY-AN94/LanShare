@@ -98,7 +98,9 @@ pub async fn lan_guard(State(state): State<Shared>, ConnectInfo(peer): ConnectIn
         tracing::warn!("rejected non-LAN peer {peer}");
         return deny(StatusCode::FORBIDDEN, "只允许局域网内的设备访问");
     }
-    if state.is_paused() {
+    // While paused only the (public) page shell loads, so the phone can show
+    // its own "paused" screen; every API call is refused.
+    if state.is_paused() && req.uri().path().starts_with("/api/") {
         return deny(StatusCode::SERVICE_UNAVAILABLE, "电脑端已暂停共享");
     }
     req.extensions_mut().insert(Listener::Lan);
@@ -185,6 +187,7 @@ pub async fn local_login(State(state): State<Shared>, req_listener: Option<axum:
     if req_listener.map(|e| e.0) != Some(Listener::Local) || !ct_eq(q.token.as_bytes(), state.local_token.as_bytes()) {
         return deny(StatusCode::NOT_FOUND, "not found");
     }
+    tracing::info!("desktop window signed in");
     let mut res = Redirect::to("/").into_response();
     res.headers_mut().insert(
         header::SET_COOKIE,

@@ -24,8 +24,10 @@ futures-util = "0.3.34"
 gethostname = "1.1.0"
 getrandom = "0.4.3"
 hex = "0.4.3"
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 if-addrs = "0.15.0"
 mime_guess = "2.0.5"
+notify = "8.2.0"
 percent-encoding = "2.3.2"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 rcgen = { version = "0.14.10", features = ["x509-parser", "pem"] }
@@ -58,3 +60,6 @@ strip = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.190"

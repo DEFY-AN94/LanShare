@@ -105,7 +105,9 @@ export function SettingsPage() {
             </button>
           </div>
         </div>
-        <p className="muted small">手机只能看到这个文件夹里的内容。聊天中收到的文件放在「收件箱」，发给手机的文件放在「已发送」。</p>
+        <p className="muted small">
+          手机只能看到这个文件夹里的内容。聊天中收到的文件放在「收件箱」，发给手机的文件放在「已发送」；这两个文件夹只在电脑上可见，手机只能通过聊天消息打开各自的文件。
+        </p>
       </section>
 
       <section className="card">
@@ -124,7 +126,8 @@ export function SettingsPage() {
           );
         })}
         <p className="muted small">
-          连不上时检查：手机和电脑是否在同一个 Wi-Fi；访客网络、公司网络可能禁止设备互访；手机上的 VPN 可能拦截局域网流量。
+          连不上时检查：手机和电脑是否在同一个 Wi-Fi；访客网络、公司网络可能禁止设备互访；手机上的 VPN 可能拦截局域网流量；macOS
+          防火墙里要允许 LanShare 接受传入连接（Windows 上还要把当前网络设为「专用网络」）。
         </p>
       </section>
 
@@ -134,6 +137,7 @@ export function SettingsPage() {
           <div>
             <div className="setting-title">本机根证书指纹（SHA-256）</div>
             <code className="fingerprint">{fingerprint}</code>
+            <div className="muted small">在 iPhone 上安装证书前，核对证书详情里的 SHA-256 与此一致。</div>
           </div>
         </div>
         <div className="setting-row">

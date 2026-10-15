@@ -86,6 +86,8 @@ pub struct PairingSession {
     pub code: String,
     pub expires_at: i64,
     pub urls: Vec<PairingUrl>,
+    /// SHA-256 of the local CA, to compare with the profile on the phone.
+    pub ca_fingerprint: String,
 }
 
 #[derive(Serialize, Clone)]

@@ -334,7 +334,8 @@ h2 {
 /* ---------- toasts ---------- */
 .toasts {
   position: fixed;
-  top: calc(var(--safe-top) + 12px);
+  /* Follow the visual viewport so toasts stay visible while the keyboard is up. */
+  top: calc(var(--app-top, 0px) + var(--safe-top) + 12px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -1294,4 +1295,46 @@ h2 {
 }
 .cert-guide .btn {
   margin: 4px 0 10px;
+}
+
+/* ---------- review fixes ---------- */
+.pending-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  min-width: 36px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.pending-action:hover {
+  background: var(--surface-2);
+}
+.fingerprint-box {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.fingerprint-short {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+.pair-switch {
+  display: block;
+  margin: 12px auto 0;
+}
+.pair-hint {
+  max-width: 420px;
+  text-align: center;
+  margin: 0;
+}
+/* Landscape iPhone: keep controls clear of the Dynamic Island and corners. */
+.app-viewport {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }

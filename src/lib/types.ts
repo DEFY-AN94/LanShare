@@ -74,6 +74,7 @@ export interface PairingSession {
   code: string;
   expires_at: number;
   urls: PairingUrl[];
+  ca_fingerprint: string;
 }
 
 export interface PairRequest {

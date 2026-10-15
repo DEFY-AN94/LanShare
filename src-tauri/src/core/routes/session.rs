@@ -52,6 +52,7 @@ pub async fn unpair(State(state): State<Shared>, Extension(session): Extension<S
         return Err(ApiError::bad_request("电脑端不能解除自己的配对"));
     };
     state.db.delete_device(id)?;
+    state.revoke(id);
     state.emit(Audience::Host, "devices", &json!({}));
     let mut res = Json(json!({ "ok": true })).into_response();
     res.headers_mut().insert(header::SET_COOKIE, clear_device_cookie_header());

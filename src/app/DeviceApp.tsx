@@ -66,7 +66,7 @@ export function DeviceApp({ me }: { me: Me }) {
     }
   };
 
-  const offline = conn === "offline" || conn === "paused";
+  const offline = conn === "offline" || conn === "paused" || conn === "unauthorized";
 
   return (
     <div className="device app-viewport">
@@ -81,7 +81,15 @@ export function DeviceApp({ me }: { me: Me }) {
         <div className="topbar-title">
           <span className="ellipsis">{me.host_name}</span>
           <span className={`status ${conn === "open" ? "online" : ""}`}>
-            {conn === "open" ? "已连接" : conn === "paused" ? "电脑已暂停共享" : conn === "offline" ? "连接中断，正在重连…" : "正在连接…"}
+            {conn === "open"
+              ? "已连接"
+              : conn === "paused"
+                ? "电脑已暂停共享"
+                : conn === "offline"
+                  ? "连接中断，正在重连…"
+                  : conn === "unauthorized"
+                    ? "已解除配对"
+                    : "正在连接…"}
           </span>
         </div>
         <button className="icon-btn" aria-label="更多" onClick={() => setMenu(true)}>

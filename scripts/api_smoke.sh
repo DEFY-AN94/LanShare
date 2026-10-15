@@ -2,7 +2,7 @@
 # End-to-end API smoke test against a running headless LanShare server.
 #
 #   npm run headless -- --local-port 53299 > .dev-data/headless.log 2>&1 &
-#   PHONE_OVERRIDE=https://127.0.0.1:53210 scripts/api_smoke.sh .
+#   PHONE_OVERRIDE=https://127.0.0.1:39210 scripts/api_smoke.sh .
 #
 # PHONE_OVERRIDE avoids the macOS firewall prompt for the unsigned test binary;
 # without it the script talks to the LAN address printed in the log.

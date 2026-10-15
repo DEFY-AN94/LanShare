@@ -147,6 +147,23 @@ impl Tls {
         Ok(true)
     }
 
+    /// Re-issues the server certificate when it nears expiry (for apps that
+    /// run for months without a restart).
+    pub fn ensure_fresh(&self) -> Result<bool> {
+        let pem = std::fs::read_to_string(Self::leaf_cert_path(&self.dir))?;
+        let (_, parsed) = parse_x509_pem(pem.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let leaf = parsed.parse_x509().map_err(|e| anyhow::anyhow!("{e}"))?;
+        if leaf.validity().not_after.to_datetime() - OffsetDateTime::now_utc() >= Duration::days(RENEW_BEFORE_DAYS) {
+            return Ok(false);
+        }
+        let ips = self.leaf_ips.read().unwrap().clone();
+        let (_, issuer) = Self::load_ca(&self.dir)?;
+        let (chain, key) = Self::ensure_leaf(&self.dir, &self.ca_pem(), &issuer, self.host_dns.as_deref(), &ips, true)?;
+        self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
+        tracing::info!("server certificate renewed before expiry");
+        Ok(true)
+    }
+
     /// Throws away the CA and server certificate and starts fresh.
     pub fn reset(&self, host_label: &str, ips: &[IpAddr]) -> Result<()> {
         let (ca_pem, issuer) = Self::create_ca(&self.dir, host_label)?;
@@ -325,6 +342,9 @@ mod tests {
         assert!(!again.ensure_ips(&[ip2]).unwrap());
         assert_ne!(std::fs::read_to_string(dir.path().join("server.pem")).unwrap(), leaf1);
         assert_eq!(again.ca_fingerprint(), fp);
+
+        // Still fresh: nothing to renew.
+        assert!(!again.ensure_fresh().unwrap());
 
         // Reset: new CA.
         again.reset("test", &[ip1]).unwrap();

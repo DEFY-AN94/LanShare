@@ -14,7 +14,7 @@ use crate::core::db::DeviceRow;
 use crate::core::error::{ApiError, ApiResult};
 use crate::core::events::Audience;
 use crate::core::model::{DeviceOut, HostOverview, PairRequestOut, PairingSession, PairingUrl};
-use crate::core::paths::Sandbox;
+use crate::core::paths::{Sandbox, unsafe_root_reason};
 use crate::core::state::Shared;
 use crate::core::util::{now_ms, random_hex, random_token, sha256_hex};
 
@@ -23,7 +23,7 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         host_name: state.host_name.clone(),
         port: state.lan_port,
         addresses: state.addresses(),
-        shared_root: state.sandbox().root().display().to_string(),
+        shared_root: crate::core::paths::shell_path(state.sandbox().root()).display().to_string(),
         ca_fingerprint: state.tls.ca_fingerprint(),
         paused: state.is_paused(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -57,7 +57,7 @@ pub async fn start_pairing(State(state): State<Shared>) -> Json<PairingSession> 
             PairingUrl { qr_svg: qr_svg(&url), url, ip: a.ip, iface: a.iface }
         })
         .collect();
-    Json(PairingSession { code, expires_at, urls })
+    Json(PairingSession { code, expires_at, urls, ca_fingerprint: state.tls.ca_fingerprint() })
 }
 
 pub async fn cancel_pairing(State(state): State<Shared>) -> StatusCode {
@@ -141,6 +141,7 @@ pub async fn delete_device(State(state): State<Shared>, Path(id): Path<String>) 
     if !state.db.delete_device(&id)? {
         return Err(ApiError::not_found("设备不存在"));
     }
+    state.revoke(&id);
     state.emit(Audience::Device(id), "revoked", &json!({}));
     state.emit(Audience::Host, "devices", &json!({}));
     Ok(StatusCode::NO_CONTENT)
@@ -162,11 +163,43 @@ pub struct PathBody {
     path: String,
 }
 
-pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<StatusCode> {
+/// Things the OS would *run* rather than show (apps, scripts, installers,
+/// shortcuts). Files from other devices of this kind are only revealed.
+fn is_launchable(path: &std::path::Path) -> bool {
+    const RISKY: &[&str] = &[
+        "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "fish", "pkg", "mpkg", "jar", "py", "rb", "pl", "php", "scpt",
+        "scptd", "applescript", "workflow", "action", "fileloc", "inetloc", "webloc", "prefpane", "kext", "plugin", "osax", "dylib", "exe",
+        "bat", "cmd", "com", "scr", "msi", "msp", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "lnk", "url", "reg",
+        "cpl", "msc", "appref-ms", "settingcontent-ms", "library-ms", "inf", "pif", "application", "gadget", "desktop", "appimage",
+    ];
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if RISKY.contains(&ext.as_str()) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(m) = std::fs::metadata(path)
+            && m.is_file()
+            && m.permissions().mode() & 0o111 != 0
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Opens with the default app; launchable files are revealed in the folder instead.
+pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
     let path = state.sandbox().resolve_existing(&b.path)?;
     let bridge = state.bridge.clone();
-    tokio::task::spawn_blocking(move || bridge.open_path(&path)).await.map_err(ApiError::internal)?.map_err(ApiError::internal)?;
-    Ok(StatusCode::NO_CONTENT)
+    // Covers app bundles too (directories named *.app).
+    let reveal = is_launchable(&path);
+    tokio::task::spawn_blocking(move || if reveal { bridge.reveal_path(&path) } else { bridge.open_path(&path) })
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({ "action": if reveal { "revealed" } else { "opened" } })))
 }
 
 pub async fn reveal(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<StatusCode> {
@@ -202,16 +235,19 @@ pub async fn pick_shared_root(State(state): State<Shared>, Extension(_s): Extens
     let Some(dir) = picked else {
         return Ok(StatusCode::NO_CONTENT.into_response());
     };
-    if dir.parent().is_none() {
-        return Err(ApiError::bad_request("不能把整个磁盘设为共享文件夹"));
+    if let Some(reason) = unsafe_root_reason(&dir, &state.home_dir, &state.data_dir) {
+        return Err(ApiError::bad_request(reason));
     }
-    let sandbox = Sandbox::new(&dir).map_err(|e| ApiError::bad_request(format!("无法使用这个文件夹：{e}")))?;
+    let sandbox = Sandbox::new(&dir)
+        .map_err(|e| ApiError::bad_request(format!("无法使用这个文件夹：{e}")))?
+        .with_deny(std::slice::from_ref(&state.data_dir));
     {
         let mut cfg = state.config.lock().unwrap();
         cfg.shared_root = sandbox.root().to_path_buf();
         cfg.save(&state.data_dir).map_err(ApiError::internal)?;
     }
     state.set_sandbox(sandbox);
+    crate::core::watch_shared_folder(&state);
     state.emit_files_changed("");
     tracing::info!("shared folder changed to {}", dir.display());
     Ok(overview(State(state)).await.into_response())

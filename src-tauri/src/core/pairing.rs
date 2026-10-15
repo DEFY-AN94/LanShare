@@ -23,6 +23,7 @@ pub enum PairError {
     BadCredential,
     TooMany,
     RateLimited,
+    CodeDisabled,
 }
 
 impl PairError {
@@ -32,6 +33,7 @@ impl PairError {
             PairError::BadCredential => "配对码不正确",
             PairError::TooMany => "等待确认的请求太多了，请先在电脑上处理",
             PairError::RateLimited => "尝试太频繁，请稍等一分钟再试",
+            PairError::CodeDisabled => "配对码错误次数太多已停用，请扫描二维码，或在电脑上重新生成",
         }
     }
 }
@@ -41,6 +43,14 @@ struct Session {
     code: String,
     expires_at: i64,
     code_failures: u32,
+}
+
+impl Session {
+    /// After too many wrong guesses the 6-digit code stops working, but the
+    /// unguessable QR token stays valid so an attacker cannot block pairing.
+    fn code_disabled(&self) -> bool {
+        self.code_failures >= MAX_CODE_FAILURES
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,21 +136,18 @@ impl Pairing {
             return Err(PairError::NoSession);
         }
         let session = self.session.as_mut().expect("checked above");
-        let (ok, exhausted) = match (token, code) {
-            (Some(t), _) if !t.is_empty() => (ct_eq(t.as_bytes(), session.token.as_bytes()), false),
+        let ok = match (token, code) {
+            (Some(t), _) if !t.is_empty() => ct_eq(t.as_bytes(), session.token.as_bytes()),
+            (_, Some(_)) if session.code_disabled() => return Err(PairError::CodeDisabled),
             (_, Some(c)) if !c.is_empty() => {
                 let ok = ct_eq(c.as_bytes(), session.code.as_bytes());
                 if !ok {
                     session.code_failures += 1;
                 }
-                (ok, session.code_failures >= MAX_CODE_FAILURES)
+                ok
             }
-            _ => (false, false),
+            _ => false,
         };
-        if exhausted {
-            // Too many wrong codes: the code can no longer be guessed at all.
-            self.session = None;
-        }
         if !ok {
             return Err(PairError::BadCredential);
         }
@@ -246,21 +253,17 @@ mod tests {
         let (_t, code, exp) = p.start(0);
         assert_eq!(p.request(None, Some("000000x"), "a", ip(2), 1).unwrap_err(), PairError::BadCredential);
         assert!(p.request(None, Some(&code), "a", ip(2), exp + 1).is_err());
-        let (_t, code, _) = p.start(1000);
-        let mut now = 2000;
-        let mut killed = false;
+
+        let (token, code, _) = p.start(1000);
+        let wrong = if code == "999999" { "999998" } else { "999999" };
+        // Spread attempts over different IPs to stay under the per-IP rate limit.
         for i in 0..10 {
-            // Spread attempts over different IPs to stay under the rate limit.
-            let r = p.request(None, Some("999999"), "a", ip(10 + i), now);
-            if code == "999999" {
-                return;
-            }
-            assert!(r.is_err());
-            now += 1;
-            killed = p.session.is_none();
+            assert_eq!(p.request(None, Some(wrong), "a", ip(10 + i), 2000 + i as i64).unwrap_err(), PairError::BadCredential);
         }
-        assert!(killed, "session should be invalidated after 10 failures");
-        assert_eq!(p.request(None, Some(&code), "a", ip(50), now).unwrap_err(), PairError::NoSession);
+        // The code is now dead, even the right one…
+        assert_eq!(p.request(None, Some(&code), "a", ip(50), 3000).unwrap_err(), PairError::CodeDisabled);
+        // …but the QR token still pairs.
+        assert!(p.request(Some(&token), None, "a", ip(51), 3001).is_ok());
     }
 
     #[test]

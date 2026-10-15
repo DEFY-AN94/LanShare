@@ -95,6 +95,7 @@ pub async fn send(State(state): State<Shared>, Extension(session): Extension<Ses
         file_size: None,
         mime: None,
         created_at: now_ms(),
+        file_root: None,
     })?;
     let out = state.message_out(row);
     after_insert(&state, &session, &device_name, &out, is_new);
@@ -125,10 +126,11 @@ pub async fn upload(
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
     let sandbox = state.sandbox();
     let dir = sandbox.ensure_subdir(if session.is_host() { SENT_DIR } else { INBOX_DIR })?;
-    let (path, size) = receive_upload(&state, body, &dir, &name).await?;
+    let (path, size) = receive_upload(&state, &session, body, &dir, &name).await?;
     let rel = sandbox.relative(&path).ok_or_else(|| ApiError::internal("upload landed outside the shared folder"))?;
     let final_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
     let mime = mime_guess::from_path(&final_name).first_or_octet_stream().to_string();
+    let root = sandbox.root().to_string_lossy().into_owned();
     let (row, is_new) = state.db.insert_message(&NewMessage {
         device_id: &device_id,
         from_host: session.is_host(),
@@ -140,6 +142,7 @@ pub async fn upload(
         file_size: Some(size as i64),
         mime: Some(&mime),
         created_at: now_ms(),
+        file_root: Some(&root),
     })?;
     let out = state.message_out(row);
     state.emit_files_changed(rel.rsplit_once('/').map(|(d, _)| d).unwrap_or(""));
@@ -166,8 +169,8 @@ pub async fn file(
         return Err(ApiError::not_found("消息不存在"));
     }
     let rel = msg.file_path.ok_or_else(|| ApiError::not_found("这条消息没有文件"))?;
-    let path = state.sandbox().resolve_file(&rel).map_err(|_| ApiError::not_found("文件已被移动或删除"))?;
+    let path = state.attachment_path(msg.file_root.as_deref(), &rel).ok_or_else(|| ApiError::not_found("文件已被移动或删除"))?;
     let name = msg.file_name.unwrap_or_else(|| rel.rsplit('/').next().unwrap_or("file").to_string());
     let (parts, _) = req.into_parts();
-    Ok(serve_path(&path, &name, q.inline == Some(1), &parts).await)
+    Ok(serve_path(&state, &session, &path, &name, q.inline == Some(1), &parts).await)
 }

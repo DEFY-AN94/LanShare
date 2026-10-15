@@ -40,14 +40,59 @@ impl From<io::Error> for PathError {
 
 #[derive(Clone, Debug)]
 pub struct Sandbox {
+    /// Friendly form (no `\\?\` prefix on Windows) for display and relative paths.
     root: PathBuf,
+    /// Form produced by `std::fs::canonicalize`; containment checks compare
+    /// against this so long Windows paths (kept verbatim) still match.
+    root_canon: PathBuf,
+    /// Places inside the root that must never be served (LanShare's own data).
+    deny: Vec<PathBuf>,
 }
 
 impl Sandbox {
     /// Creates the folder if needed and remembers its canonical form.
     pub fn new(root: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(root)?;
-        Ok(Self { root: dunce::canonicalize(root)? })
+        Self::existing(root)
+    }
+
+    /// Opens a folder that must already exist (never creates it).
+    pub fn existing(root: &Path) -> io::Result<Self> {
+        let root_canon = std::fs::canonicalize(root)?;
+        if !root_canon.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotADirectory, "not a folder"));
+        }
+        Ok(Self { root: friendly(&root_canon), root_canon, deny: Vec::new() })
+    }
+
+    /// Adds paths (e.g. the app data dir) that stay off-limits even if they
+    /// happen to live under the root.
+    pub fn with_deny(mut self, paths: &[PathBuf]) -> Self {
+        self.deny = paths.iter().map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())).collect();
+        self
+    }
+
+    /// `canon` must come from `std::fs::canonicalize`. Besides staying under
+    /// the root, every component below it must be a name we would list:
+    /// this also catches Windows 8.3 aliases (`ENV~1` → `.env`) and items
+    /// with the hidden/system attribute.
+    fn check(&self, canon: &Path) -> Result<(), PathError> {
+        let rest = canon.strip_prefix(&self.root_canon).map_err(|_| PathError::Outside)?;
+        if self.deny.iter().any(|d| canon.starts_with(d)) {
+            return Err(PathError::Outside);
+        }
+        let mut cur = self.root_canon.clone();
+        for comp in rest.components() {
+            let name = comp.as_os_str().to_string_lossy();
+            if name.starts_with('.') {
+                return Err(PathError::Outside);
+            }
+            cur.push(comp);
+            if hidden_by_os(&cur) {
+                return Err(PathError::Outside);
+            }
+        }
+        Ok(())
     }
 
     pub fn root(&self) -> &Path {
@@ -60,11 +105,21 @@ impl Sandbox {
         for seg in segments(rel)? {
             joined.push(seg);
         }
-        let canon = dunce::canonicalize(&joined)?;
-        if !canon.starts_with(&self.root) {
-            return Err(PathError::Outside);
-        }
-        Ok(canon)
+        let canon = std::fs::canonicalize(&joined)?;
+        self.check(&canon)?;
+        Ok(friendly(&canon))
+    }
+
+    /// Resolves an entry *without* following a symlink in its last component,
+    /// so rename/delete act on the link itself rather than its target.
+    pub fn resolve_entry(&self, rel: &str) -> Result<PathBuf, PathError> {
+        let segs = segments(rel)?;
+        let (last, parents) = segs.split_last().ok_or(PathError::Invalid)?;
+        let parent = std::fs::canonicalize(self.resolve_dir(&parents.join("/"))?)?;
+        let entry = parent.join(last);
+        std::fs::symlink_metadata(&entry)?;
+        self.check(&entry)?;
+        Ok(friendly(&entry))
     }
 
     pub fn resolve_dir(&self, rel: &str) -> Result<PathBuf, PathError> {
@@ -82,22 +137,59 @@ impl Sandbox {
         validate_segment(name)?;
         let p = self.root.join(name);
         std::fs::create_dir_all(&p)?;
-        let canon = dunce::canonicalize(&p)?;
-        if !canon.starts_with(&self.root) || !canon.is_dir() {
-            return Err(PathError::Outside);
+        let canon = std::fs::canonicalize(&p)?;
+        self.check(&canon)?;
+        if !canon.is_dir() {
+            return Err(PathError::Invalid);
         }
-        Ok(canon)
+        Ok(friendly(&canon))
     }
 
     /// Converts an absolute path under the root back to the client form.
     pub fn relative(&self, abs: &Path) -> Option<String> {
-        let rest = abs.strip_prefix(&self.root).ok()?;
+        let rest = abs.strip_prefix(&self.root).or_else(|_| abs.strip_prefix(&self.root_canon)).ok()?;
         let parts: Vec<String> = rest
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
         Some(parts.join("/"))
     }
+}
+
+/// Drops the `\\?\` prefix where Windows allows it (paths under MAX_PATH);
+/// long paths stay verbatim so they keep working.
+fn friendly(p: &Path) -> PathBuf {
+    dunce::simplified(p).to_path_buf()
+}
+
+/// A path the Windows shell accepts (it rejects `\\?\` forms): verbatim
+/// UNC becomes `\\host\share`, verbatim disk paths lose the prefix.
+pub fn shell_path(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    p.to_path_buf()
+}
+
+/// Windows hidden/system attributes (e.g. AppData, desktop.ini).
+fn hidden_by_os(_p: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const HIDDEN: u32 = 0x2;
+        const SYSTEM: u32 = 0x4;
+        if let Ok(m) = std::fs::symlink_metadata(_p) {
+            return m.file_attributes() & (HIDDEN | SYSTEM) != 0;
+        }
+    }
+    false
 }
 
 /// Splits `a/b/c` into validated segments; empty segments are ignored so
@@ -138,6 +230,12 @@ pub fn is_windows_reserved(name: &str) -> bool {
             && stem.as_bytes()[3] != b'0')
 }
 
+/// Invisible formatting characters. Bidi overrides (U+202E…) can make
+/// `photo\u{202E}gpj.app` display as `photoppa.jpg`, so they are dropped.
+fn is_format_char(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
+
 /// Turns an arbitrary client-provided file name into one that is valid on
 /// both macOS and Windows. Returns `None` if nothing usable is left.
 pub fn sanitize_filename(raw: &str) -> Option<String> {
@@ -145,6 +243,7 @@ pub fn sanitize_filename(raw: &str) -> Option<String> {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
     let replaced: String = base
         .chars()
+        .filter(|c| !is_format_char(*c))
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
             c if c.is_control() => '_',
@@ -178,6 +277,29 @@ fn truncate_keep_extension(name: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}{}", &stem[..end], ext)
+}
+
+/// Why a folder must not become the shared folder, if it must not.
+/// Sharing the home folder (or anything above it) would expose things like
+/// ~/Library and LanShare's own private keys to every paired device.
+pub fn unsafe_root_reason(root: &Path, home: &Path, data_dir: &Path) -> Option<&'static str> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (root, home, data) = (canon(root), canon(home), canon(data_dir));
+    if root.parent().is_none() {
+        return Some("不能把整个磁盘设为共享文件夹");
+    }
+    if home.starts_with(&root) {
+        return Some("不能共享用户文件夹本身或它的上级，请选择或新建一个子文件夹");
+    }
+    if data.starts_with(&root) || root.starts_with(&data) {
+        return Some("这个文件夹包含 LanShare 自己的数据，不能共享");
+    }
+    for private in ["Library", "AppData"] {
+        if root.starts_with(home.join(private)) {
+            return Some("不能共享系统资料库文件夹");
+        }
+    }
+    None
 }
 
 /// Picks `name`, or `name (1).ext`, `name (2).ext`… so nothing is overwritten.
@@ -265,6 +387,44 @@ mod tests {
         let long = format!("{}.mp4", "长".repeat(100));
         let s = sanitize_filename(&long).unwrap();
         assert!(s.len() <= 180 && s.ends_with(".mp4"));
+    }
+
+    #[test]
+    fn strips_bidi_overrides() {
+        assert_eq!(sanitize_filename("IMG\u{202E}gpj.terminal").unwrap(), "IMGgpj.terminal");
+        assert_eq!(sanitize_filename("a\u{200B}b.txt").unwrap(), "ab.txt");
+    }
+
+    #[test]
+    fn deny_list_and_entries() {
+        let (d, sb) = sandbox();
+        std::fs::create_dir_all(sb.root().join("data/tls")).unwrap();
+        std::fs::write(sb.root().join("data/tls/key.pem"), "k").unwrap();
+        let data = sb.root().join("data");
+        let sb = sb.with_deny(&[data]);
+        assert!(matches!(sb.resolve_existing("data/tls/key.pem"), Err(PathError::Outside)));
+        assert!(sb.resolve_existing("docs/a.txt").is_ok());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.path().join("secret.txt"), sb.root().join("out")).unwrap();
+            // The link itself (not its outside target) is addressable for rename/delete.
+            assert_eq!(sb.resolve_entry("out").unwrap(), sb.root().join("out"));
+        }
+        assert!(sb.resolve_entry("").is_err());
+    }
+
+    #[test]
+    fn unsafe_roots() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let data = home.join("Library/Application Support/app");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(home.join("LanShare")).unwrap();
+        assert!(unsafe_root_reason(&home, &home, &data).is_some());
+        assert!(unsafe_root_reason(d.path(), &home, &data).is_some());
+        assert!(unsafe_root_reason(&home.join("Library"), &home, &data).is_some());
+        assert!(unsafe_root_reason(&data, &home, &data).is_some());
+        assert!(unsafe_root_reason(&home.join("LanShare"), &home, &data).is_none());
     }
 
     #[test]

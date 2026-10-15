@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_PORT: u16 = 53210;
+/// Below 49152 so it stays clear of the dynamic/ephemeral range that
+/// Windows (Hyper-V/WSL) carves exclusion blocks out of.
+pub const DEFAULT_PORT: u16 = 39210;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
@@ -21,7 +23,7 @@ impl Config {
         data_dir.join("config.json")
     }
 
-    /// Loads `config.json`, falling back to `~/LanShare` on port 53210.
+    /// Loads `config.json`, falling back to `~/LanShare` on port 39210.
     pub fn load_or_default(data_dir: &Path, home: &Path) -> Config {
         let fallback = Config { shared_root: home.join("LanShare"), port: DEFAULT_PORT };
         match std::fs::read(Self::file(data_dir)) {
