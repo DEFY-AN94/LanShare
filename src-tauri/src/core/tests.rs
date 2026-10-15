@@ -258,7 +258,7 @@ fn shared_folder_fallbacks() {
     std::fs::create_dir_all(home.join("Shares")).unwrap();
     let mut cfg = Config { shared_root: wanted.clone(), port: 1 };
     let sb = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
-    assert_eq!(sb.root(), std::fs::canonicalize(&wanted).unwrap());
+    assert_eq!(sb.root(), dunce::canonicalize(&wanted).unwrap());
 
     // Unplugged drive (parent missing): fall back to ~/LanShare, keep the setting.
     let unplugged = dir.path().join("Volumes/T7/Media");
