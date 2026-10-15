@@ -7,7 +7,7 @@
 - **iPhone 不用装 App**：Safari 扫码打开即可，可以添加到主屏幕
 - **安全**：全程 HTTPS；扫码配对需要电脑端确认；只接受局域网连接；访问范围限制在共享文件夹内
 
-当前进度：Mac 版 MVP。Windows 版等 GitHub 仓库建好后用 GitHub Actions 打包（PLAN.md 里程碑 M6）。
+当前进度：Mac 版已完成；Windows 版由 GitHub Actions 编译、测试并打包（PLAN.md 里程碑 M6）。
 
 ## 使用
 
@@ -20,6 +20,15 @@
 从 iPhone 的「照片图库」上传时，iOS 会自动把 HEIC 照片转成 JPEG、HEVC 视频转成 H.264（分辨率不变）。需要原片时，先在「照片」App 里分享 › 存储到「文件」，再在 LanShare 里选「选取文件」。第一次上传时页面会提示一次。
 
 关掉窗口后 LanShare 会继续在后台运行（菜单栏图标 / Dock），可以从菜单栏图标里暂停共享或退出。
+
+## Windows 版
+
+GitHub Actions（`.github/workflows/ci.yml`）在 Windows 上跑全部测试，并把安装包作为构建产物上传：打开仓库的 Actions › 最新一次运行 › Artifacts › `LanShare-windows-x64` 下载。
+
+- 安装包需要管理员权限（装到「Program Files」），安装时会自动添加防火墙规则：只允许同一子网的设备、只在「专用网络」下访问 LanShare
+- 如果 Windows 把当前 Wi-Fi 设成了「公用网络」，手机连不上，LanShare 的设置页和添加设备窗口会提示改成「专用网络」
+- 安装包没有代码签名，首次运行 SmartScreen 会拦截：点「更多信息 › 仍要运行」
+- 共享文件夹在 U 盘或网络共享上时，手机端不能删除文件（那里没有回收站，避免永久删除）
 
 ## 开发
 

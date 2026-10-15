@@ -14,6 +14,10 @@ fn is_virtual(name: &str) -> bool {
         || (n.starts_with("veth") && !n.starts_with("vethernet"))
         // Hyper-V NAT/internal switches only; an External switch carries the real LAN IP.
         || (n.contains("vethernet") && (n.contains("default switch") || n.contains("wsl") || n.contains("nat")))
+        || ["vpn", "wireguard", "wintun", "openvpn", "zerotier", "tailscale", "anyconnect", "globalprotect", "pangp", "fortinet",
+            "forticlient", "nordlynx", "sonicwall", "juniper", "pulse secure", "cisco"]
+            .iter()
+            .any(|p| n.contains(p))
         || n.contains("virtualbox")
         || n.contains("vmware")
         || n.contains("hyper-v")
@@ -46,7 +50,8 @@ pub fn lan_addresses() -> Vec<Address> {
             // A Hyper-V External switch carries the real LAN address, so keep a
             // vEthernet adapter when it holds the default route (VPN tunnels stay out).
             let hyperv_primary = Some(v4.ip) == primary && iface.name.to_ascii_lowercase().contains("vethernet");
-            if iface.is_loopback() || (is_virtual(&iface.name) && !hyperv_primary) {
+            // Point-to-point links (PPP, tunnels) are VPNs, never the phone's Wi-Fi.
+            if iface.is_loopback() || ((is_virtual(&iface.name) || iface.is_p2p()) && !hyperv_primary) {
                 continue;
             }
             if is_private_v4(&v4.ip) && !found.iter().any(|(ip, _)| *ip == v4.ip) {
@@ -142,6 +147,28 @@ mod macos {
     }
 }
 
+/// Windows blocks inbound connections on networks marked "Public" (the
+/// default for newly joined Wi-Fi), so the host UI warns about it.
+#[cfg(windows)]
+pub fn network_warning() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "Get-NetConnectionProfile | ForEach-Object { [string]$_.NetworkCategory }"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines().any(|l| l.trim().eq_ignore_ascii_case("Public")).then(|| {
+        "Windows 把当前网络设成了「公用网络」，手机可能连不上。请到 设置 › 网络和 Internet › WLAN（或以太网）› 当前网络，把「网络配置文件类型」改为「专用网络」。".to_string()
+    })
+}
+
+#[cfg(not(windows))]
+pub fn network_warning() -> Option<String> {
+    None
+}
+
 /// Only devices on the local network (or this machine) may talk to the LAN server.
 pub fn is_lan_peer(ip: IpAddr) -> bool {
     match ip.to_canonical() {
@@ -173,5 +200,8 @@ mod tests {
         assert!(!is_virtual("vEthernet (External LAN)"));
         assert!(!is_virtual("en0"));
         assert!(!is_virtual("Wi-Fi"));
+        assert!(is_virtual("WireGuard Tunnel"));
+        assert!(is_virtual("ProtonVPN TUN"));
+        assert!(!is_virtual("以太网"));
     }
 }

@@ -9,6 +9,7 @@
 # It pairs a fake phone, so run it against a throwaway .dev-data directory.
 set -u
 P="$1"
+PY="${PYTHON:-python3}"   # CI on Windows sets PYTHON=python
 LOG="$P/.dev-data/headless.log"
 T=$(mktemp -d)
 pass=0; fail=0
@@ -28,28 +29,28 @@ X=(-H "X-LanShare: 1")
 
 echo "== host login"
 check "local login redirects" "$(curl "${H[@]}" -o /dev/null -w '%{http_code}' "$HOSTURL")" 303
-check "host /api/me" "$(curl "${H[@]}" "$LOCAL/api/me" | python3 -c 'import sys,json;print(json.load(sys.stdin)["kind"])')" host
+check "host /api/me" "$(curl "${H[@]}" "$LOCAL/api/me" | $PY -c 'import sys,json;print(json.load(sys.stdin)["kind"])')" host
 check "wrong Host header on loopback rejected" "$(curl "${H[@]}" -o /dev/null -w '%{http_code}' -H 'Host: evil.example:53299' "$LOCAL/api/me")" 403
 
 echo "== pairing"
 S=$(curl "${H[@]}" "${X[@]}" -X POST "$LOCAL/api/host/pairing")
-TOKEN=$(echo "$S" | python3 -c 'import sys,json,urllib.parse as u;d=json.load(sys.stdin);print(u.parse_qs(u.urlparse(d["urls"][0]["url"]).query)["t"][0])')
+TOKEN=$(echo "$S" | $PY -c 'import sys,json,urllib.parse as u;d=json.load(sys.stdin);print(u.parse_qs(u.urlparse(d["urls"][0]["url"]).query)["t"][0])')
 contains "pairing session has QR svg" "$S" '<svg'
 check "phone unpaired /api/me is 401" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' "$PHONE/api/me")" 401
 check "pair request without CSRF header rejected" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"name\":\"curl\"}" "$PHONE/api/pair/request")" 403
 R=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"name\":\"curl-phone\"}" "$PHONE/api/pair/request")
-RID=$(echo "$R" | python3 -c 'import sys,json;print(json.load(sys.stdin)["request_id"])')
+RID=$(echo "$R" | $PY -c 'import sys,json;print(json.load(sys.stdin)["request_id"])')
 contains "pair request returns confirm code" "$R" confirm_code
 check "token is single-use" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"name\":\"x\"}" "$PHONE/api/pair/request")" 403
-check "status pending" "$(curl "${D[@]}" "$PHONE/api/pair/status/$RID" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" pending
+check "status pending" "$(curl "${D[@]}" "$PHONE/api/pair/status/$RID" | $PY -c 'import sys,json;print(json.load(sys.stdin)["status"])')" pending
 contains "host sees pending request" "$(curl "${H[@]}" "$LOCAL/api/host/pairing/requests")" curl-phone
 check "approve" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -X POST "$LOCAL/api/host/pairing/requests/$RID/approve")" 200
-check "status approved" "$(curl "${D[@]}" "$PHONE/api/pair/status/$RID" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" approved
+check "status approved" "$(curl "${D[@]}" "$PHONE/api/pair/status/$RID" | $PY -c 'import sys,json;print(json.load(sys.stdin)["status"])')" approved
 grep -q ls_dev "$T/dev.jar" && ok "device cookie stored" || bad "device cookie stored"
-check "approval cannot be claimed twice" "$(curl -s -k "$PHONE/api/pair/status/$RID" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" expired
+check "approval cannot be claimed twice" "$(curl -s -k "$PHONE/api/pair/status/$RID" | $PY -c 'import sys,json;print(json.load(sys.stdin)["status"])')" expired
 ME=$(curl "${D[@]}" "$PHONE/api/me")
-check "device /api/me" "$(echo "$ME" | python3 -c 'import sys,json;print(json.load(sys.stdin)["kind"])')" device
-DEV=$(echo "$ME" | python3 -c 'import sys,json;print(json.load(sys.stdin)["device_id"])')
+check "device /api/me" "$(echo "$ME" | $PY -c 'import sys,json;print(json.load(sys.stdin)["kind"])')" device
+DEV=$(echo "$ME" | $PY -c 'import sys,json;print(json.load(sys.stdin)["device_id"])')
 
 echo "== authorization boundaries"
 check "device cannot call host API" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' "$PHONE/api/host/devices")" 403
@@ -61,20 +62,20 @@ echo "== messages"
 M=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d '{"client_id":"c-1","text":"你好，电脑 https://example.com"}' "$PHONE/api/messages")
 contains "device sends text" "$M" '"from_host":false'
 M2=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d '{"client_id":"c-1","text":"你好，电脑 https://example.com"}' "$PHONE/api/messages")
-check "retry with same client_id is deduped" "$(echo "$M2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$(echo "$M" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+check "retry with same client_id is deduped" "$(echo "$M2" | $PY -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$(echo "$M" | $PY -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
 HM=$(curl "${H[@]}" "${X[@]}" -H 'Content-Type: application/json' -d "{\"device\":\"$DEV\",\"client_id\":\"h-1\",\"text\":\"收到\"}" "$LOCAL/api/messages")
 contains "host replies" "$HM" '"from_host":true'
 LIST=$(curl "${D[@]}" "$PHONE/api/messages?limit=10")
-check "device sees 2 messages" "$(echo "$LIST" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["messages"]))')" 2
+check "device sees 2 messages" "$(echo "$LIST" | $PY -c 'import sys,json;print(len(json.load(sys.stdin)["messages"]))')" 2
 check "empty message rejected" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"text":"   "}' "$PHONE/api/messages")" 400
 head -c 300000 /dev/urandom > "$T/pic.jpg"
 FM=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/pic.jpg" "$PHONE/api/messages/upload?client_id=f-1&name=IMG_0001.jpg")
 contains "device sends a file" "$FM" '"path":"收件箱/IMG_0001.jpg"'
-FID=$(echo "$FM" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+FID=$(echo "$FM" | $PY -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 curl "${H[@]}" -o "$T/back.jpg" "$LOCAL/api/messages/$FID/file"
 cmp -s "$T/pic.jpg" "$T/back.jpg" && ok "host downloads identical file" || bad "host downloads identical file"
 FM2=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/pic.jpg" "$PHONE/api/messages/upload?client_id=f-1&name=IMG_0001.jpg")
-check "file upload retry is idempotent" "$(echo "$FM2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$FID"
+check "file upload retry is idempotent" "$(echo "$FM2" | $PY -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$FID"
 
 echo "== SSE"
 ( curl "${D[@]}" -N --max-time 3 "$PHONE/api/events" > "$T/sse.txt" ) &
@@ -104,7 +105,7 @@ for bad in '../secret' '..%2F..%2Fetc%2Fpasswd' '%2Fetc%2Fpasswd' '.dev' 'a%5Cb'
   case "$code" in 400|403|404) ok "traversal '$bad' -> $code";; *) bad "traversal '$bad' -> $code";; esac
 done
 check "cannot delete shared root" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"path":""}' "$PHONE/api/files/delete")" 400
-check "upload name with path is flattened" "$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=..%2F..%2Fevil.txt" | python3 -c 'import sys,json;print(json.load(sys.stdin)["path"])')" evil.txt
+check "upload name with path is flattened" "$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=..%2F..%2Fevil.txt" | $PY -c 'import sys,json;print(json.load(sys.stdin)["path"])')" evil.txt
 printf '<script>alert(1)</script>' > "$T/x.html"
 curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/x.html" "$PHONE/api/files/upload?dir=&name=x.html"
 HDR=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.html&inline=1")
@@ -131,7 +132,7 @@ check "removed device locked out" "$(curl "${D[@]}" -o /dev/null -w '%{http_code
 
 echo "== 6-digit code path"
 S2=$(curl "${H[@]}" "${X[@]}" -X POST "$LOCAL/api/host/pairing")
-CODE=$(echo "$S2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["code"])')
+CODE=$(echo "$S2" | $PY -c 'import sys,json;print(json.load(sys.stdin)["code"])')
 check "wrong code rejected" "$(curl -s -k "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"code":"000000","name":"x"}' "$PHONE/api/pair/request")" 403
 check "right code accepted" "$(curl -s -k "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"code\":\"$CODE\",\"name\":\"code-phone\"}" "$PHONE/api/pair/request")" 200
 
@@ -139,10 +140,10 @@ echo "== TLS"
 CERT=$(echo | openssl s_client -connect "${PHONE#https://}" -alpn h2 2>/dev/null)
 contains "ALPN h2 negotiated" "$CERT" 'ALPN protocol: h2'
 contains "chain includes local CA" "$CERT" 'LanShare Local CA'
-CANAME=$(curl -s -k "$PHONE/api/ca" | python3 -c 'import sys,json;print(json.load(sys.stdin)["name"])')
+CANAME=$(curl -s -k "$PHONE/api/ca" | $PY -c 'import sys,json;print(json.load(sys.stdin)["name"])')
 contains "CA name has its own tag" "$CANAME" '^LanShare Local CA (.*) [0-9A-F]\{6\}$'
 contains "served CA is the one /api/ca names" "$CERT" "i:.*CN *= *$CANAME"
-HN=$(curl "${H[@]}" "$LOCAL/api/host/overview" | python3 -c 'import sys,json;print(json.load(sys.stdin)["host_name"])')
+HN=$(curl "${H[@]}" "$LOCAL/api/host/overview" | $PY -c 'import sys,json;print(json.load(sys.stdin)["host_name"])')
 check "CA label is the host name" "$(echo "$CANAME" | sed 's/ [0-9A-F]\{6\}$//')" "LanShare Local CA ($HN)"
 if CN=$(scutil --get ComputerName 2>/dev/null); then
   check "host name is the Computer Name" "$HN" "$CN"

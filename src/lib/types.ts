@@ -75,6 +75,7 @@ export interface PairingSession {
   expires_at: number;
   urls: PairingUrl[];
   ca_fingerprint: string;
+  network_warning: string | null;
 }
 
 export interface PairRequest {
@@ -95,6 +96,7 @@ export interface HostOverview {
   ca_name: string;
   paused: boolean;
   version: string;
+  network_warning: string | null;
 }
 
 export interface PairRequestResponse {

@@ -277,13 +277,25 @@ pub fn watch_shared_folder(state: &Shared) {
 
 /// Follows Wi-Fi changes and renames of the computer (address list +
 /// certificate) and renews the certificate before it expires.
+async fn refresh_network_warning(state: &Shared) {
+    if let Ok(w) = tokio::task::spawn_blocking(net::network_warning).await
+        && state.set_network_warning(w)
+    {
+        state.emit(Audience::Host, "network", &json!({}));
+    }
+}
+
 async fn watch_network(state: Shared) {
+    refresh_network_warning(&state).await;
     let mut tick = tokio::time::interval(Duration::from_secs(20));
     let mut ticks: u64 = 0;
     tick.tick().await;
     loop {
         tick.tick().await;
         ticks += 1;
+        if ticks.is_multiple_of(15) {
+            refresh_network_warning(&state).await;
+        }
         if ticks.is_multiple_of(180) {
             let st = state.clone();
             if let Ok(Err(e)) = tokio::task::spawn_blocking(move || st.tls.ensure_fresh()).await {
@@ -304,6 +316,7 @@ async fn watch_network(state: Shared) {
         }
         if moved {
             state.emit(Audience::Host, "network", &json!({}));
+            refresh_network_warning(&state).await;
         }
     }
 }
