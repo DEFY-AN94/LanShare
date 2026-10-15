@@ -187,7 +187,8 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
 
     let lan_app = routes::lan_router(state.clone());
     // Non-LAN peers and connection floods are cut off before the TLS handshake.
-    let acceptor = RustlsAcceptor::new(state.tls.rustls_config()).acceptor(guard::LanAcceptor::default());
+    let acceptor =
+        guard::LogHandshakeFailures(RustlsAcceptor::new(state.tls.rustls_config()).acceptor(guard::LanAcceptor::default()));
     let mut server = axum_server::from_tcp(lan_listener)?.acceptor(acceptor);
     server.http_builder().http1().timer(TokioTimer::new()).header_read_timeout(Duration::from_secs(20));
     server

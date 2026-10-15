@@ -27,7 +27,7 @@ export function CertGuide({ compact }: { compact?: boolean }) {
         </li>
         <li>回到 Safari 重新打开 LanShare，地址栏不再显示「不安全」。</li>
         <li>
-          最后在 Safari 里点分享 › <b>添加到主屏幕</b>。如果装证书之前已经添加过（图标是灰色的字母），先删掉旧图标再重新添加。
+          最后在 Safari 里点分享 › <b>添加到主屏幕</b>。如果以前添加过、图标是灰色的字母，先删掉旧图标再重新添加。
         </li>
       </ol>
       <a className="btn btn-primary" href="/api/ca.crt">

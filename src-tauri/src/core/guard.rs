@@ -62,6 +62,36 @@ impl LanAcceptor {
     }
 }
 
+/// Wraps the TLS acceptor to log failed handshakes, e.g. a phone that does
+/// not trust the local CA. rustls drops these errors silently otherwise.
+#[derive(Clone)]
+pub struct LogHandshakeFailures<A>(pub A);
+
+impl<A, S> Accept<TcpStream, S> for LogHandshakeFailures<A>
+where
+    A: Accept<TcpStream, S>,
+    A::Future: Send + 'static,
+{
+    type Stream = A::Stream;
+    type Service = A::Service;
+    type Future = Pin<Box<dyn std::future::Future<Output = io::Result<(A::Stream, A::Service)>> + Send>>;
+
+    fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
+        let peer = stream.peer_addr().map(|a| a.ip().to_canonical()).ok();
+        let fut = self.0.accept(stream, service);
+        Box::pin(async move {
+            let res = fut.await;
+            if let (Err(e), Some(ip)) = (&res, peer) {
+                // Refused and non-LAN peers are LanAcceptor's own decisions.
+                if !matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ConnectionRefused) {
+                    tracing::debug!("TLS handshake with {ip} failed: {e}");
+                }
+            }
+            res
+        })
+    }
+}
+
 /// A TCP stream that holds its connection slot for as long as it lives.
 pub struct GuardedStream {
     inner: TcpStream,

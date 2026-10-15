@@ -7,9 +7,13 @@ mod pair;
 mod session;
 mod static_files;
 
+use std::net::SocketAddr;
+
 use axum::Router;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderValue, header};
-use axum::middleware::{from_fn, from_fn_with_state};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
+use axum::response::Response;
 use axum::routing::{get, patch, post};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -66,7 +70,19 @@ fn api(state: &Shared) -> Router<Shared> {
 
 /// HTTPS router for phones on the LAN.
 pub fn lan_router(state: Shared) -> Router {
-    api(&state).layer(from_fn_with_state(state.clone(), lan_guard)).with_state(state)
+    api(&state).layer(from_fn_with_state(state.clone(), lan_guard)).layer(from_fn(access_log)).with_state(state)
+}
+
+/// Debug log of page and asset requests from phones (API calls are left out:
+/// their paths carry file names).
+async fn access_log(ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
+    let (method, path) = (req.method().clone(), req.uri().path().to_owned());
+    let ua = req.headers().get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("-").to_owned();
+    let res = next.run(req).await;
+    if !path.starts_with("/api/") {
+        tracing::debug!("{} {method} {path} -> {} ua={ua}", peer.ip().to_canonical(), res.status().as_u16());
+    }
+    res
 }
 
 /// Plain-HTTP router for the desktop window on 127.0.0.1.
