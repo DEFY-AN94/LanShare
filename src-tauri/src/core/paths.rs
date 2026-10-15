@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn deny_list_and_entries() {
-        let (d, sb) = sandbox();
+        let (_dir, sb) = sandbox();
         std::fs::create_dir_all(sb.root().join("data/tls")).unwrap();
         std::fs::write(sb.root().join("data/tls/key.pem"), "k").unwrap();
         let data = sb.root().join("data");
@@ -406,7 +406,7 @@ mod tests {
         assert!(sb.resolve_existing("docs/a.txt").is_ok());
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(d.path().join("secret.txt"), sb.root().join("out")).unwrap();
+            std::os::unix::fs::symlink(_dir.path().join("secret.txt"), sb.root().join("out")).unwrap();
             // The link itself (not its outside target) is addressable for rename/delete.
             assert_eq!(sb.resolve_entry("out").unwrap(), sb.root().join("out"));
         }

@@ -47,6 +47,8 @@ jobs:
           cargo build --manifest-path src-tauri/Cargo.toml --example headless
           mkdir -p .dev-data
           ./src-tauri/target/debug/examples/headless --data .dev-data/ci --shared .dev-data/ci-share --local-port 53299 > .dev-data/headless.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
           for i in $(seq 1 60); do grep -q "Press Ctrl" .dev-data/headless.log && break; sleep 1; done
           sed 's/token=[A-Za-z0-9_-]*/token=***/' .dev-data/headless.log
           PORT=$(grep -o 'listening on port [0-9]*' .dev-data/headless.log | head -1 | grep -o '[0-9]*$')
