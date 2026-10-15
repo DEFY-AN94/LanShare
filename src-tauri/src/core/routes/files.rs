@@ -5,6 +5,7 @@ use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -15,7 +16,7 @@ use crate::core::error::{ApiError, ApiResult};
 use crate::core::model::{DirListing, FileEntry};
 use crate::core::paths::{Sandbox, sanitize_filename, segments};
 use crate::core::state::{INBOX_DIR, SENT_DIR, Shared};
-use crate::core::transfer::{receive_upload, serve_path};
+use crate::core::transfer::{REJECTED_UPLOAD_DRAIN, discard_body, receive_upload, serve_path};
 
 fn require_write(session: &Session) -> ApiResult<()> {
     if session.can_write() { Ok(()) } else { Err(ApiError::forbidden("这台设备只有读取权限")) }
@@ -138,17 +139,29 @@ pub async fn upload(
     State(state): State<Shared>,
     Extension(session): Extension<Session>,
     Query(q): Query<UploadQuery>,
+    headers: HeaderMap,
     body: Body,
 ) -> ApiResult<Json<FileEntry>> {
-    require_write(&session)?;
-    require_visible(&session, &q.dir)?;
+    let mut body = Some(body);
+    let result = store_upload(&state, &session, &q, &mut body).await;
+    // Left unread only when the upload was rejected up front.
+    if let Some(rest) = body {
+        discard_body(&headers, rest, REJECTED_UPLOAD_DRAIN).await;
+    }
+    result.map(Json)
+}
+
+async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, body: &mut Option<Body>) -> ApiResult<FileEntry> {
+    require_write(session)?;
+    require_visible(session, &q.dir)?;
     let sandbox = state.sandbox();
     let dir = sandbox.resolve_dir(&q.dir)?;
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
-    let (path, _) = receive_upload(&state, &session, body, &dir, &name).await?;
+    let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
+    let (path, _) = receive_upload(state, session, body, &dir, &name).await?;
     let entry = entry_for(&sandbox, &path).ok_or_else(|| ApiError::internal("uploaded file vanished"))?;
     state.emit_files_changed(&sandbox.relative(&dir).unwrap_or_default());
-    Ok(Json(entry))
+    Ok(entry)
 }
 
 #[derive(Deserialize)]

@@ -147,7 +147,9 @@ CANAME=$(curl -s -k "$PHONE/api/ca" | py -c 'import sys,json;print(json.load(sys
 contains "CA name has its own tag" "$CANAME" '^LanShare Local CA (.*) [0-9A-F]\{6\}$'
 contains "served CA is the one /api/ca names" "$CERT" "i:.*CN *= *$CANAME"
 HN=$(curl "${H[@]}" "$LOCAL/api/host/overview" | py -c 'import sys,json;print(json.load(sys.stdin)["host_name"])')
-check "CA label is the host name" "$(echo "$CANAME" | sed 's/ [0-9A-F]\{6\}$//')" "LanShare Local CA ($HN)"
+# The label is cut to 40 characters (tls::ca_common_name); CI runner names are longer.
+HN40=$(printf '%s' "$HN" | py -c 'import sys;print(sys.stdin.read()[:40])')
+check "CA label is the host name" "$(echo "$CANAME" | sed 's/ [0-9A-F]\{6\}$//')" "LanShare Local CA ($HN40)"
 if CN=$(scutil --get ComputerName 2>/dev/null); then
   check "host name is the Computer Name" "$HN" "$CN"
 fi
@@ -159,3 +161,4 @@ fi
 echo
 echo "passed: $pass  failed: $fail"
 rm -rf "$T"
+[ "$fail" -eq 0 ]

@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::request::Parts;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use futures_util::StreamExt;
 use mime_guess::Mime;
@@ -234,6 +234,31 @@ pub async fn receive_upload(state: &Shared, session: &Session, body: Body, dir: 
         mark_quarantined(&target);
     }
     Ok((target, total))
+}
+
+/// The most of a rejected upload that is read before giving up on the connection.
+pub const REJECTED_UPLOAD_DRAIN: u64 = 16 << 20;
+
+/// Reads and drops a request body the handler did not use, so the client gets
+/// the response. Answering while the client is still sending makes hyper close
+/// the connection with data unread: the client fails mid-send, and on Windows
+/// the reset also throws away the response it had already received, so a
+/// retried upload that went through looks failed. A client that sent
+/// `Expect: 100-continue` holds the body back until it is polled, so there is
+/// nothing to drain. Gives up after `limit` bytes or a 20 s stall.
+pub async fn discard_body(headers: &HeaderMap, body: Body, limit: u64) {
+    let expects_continue = headers.get(header::EXPECT).is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+    if expects_continue {
+        return;
+    }
+    let mut stream = body.into_data_stream();
+    let mut seen: u64 = 0;
+    while seen <= limit {
+        match tokio::time::timeout(Duration::from_secs(20), stream.next()).await {
+            Ok(Some(Ok(chunk))) => seen += chunk.len() as u64,
+            _ => break,
+        }
+    }
 }
 
 #[cfg(test)]
