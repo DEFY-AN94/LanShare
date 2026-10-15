@@ -2,7 +2,7 @@
 
 > A messaging and file-transfer tool for iPhone ↔ computer (macOS / Windows) on the local network. LAN only; nothing goes through any cloud.
 >
-> Document date: 2026-10-15 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) in progress on branch `windows-m6` · "LanShare" is a working name and can be changed
+> Document date: 2026-10-15 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); the installer still needs testing on a real Windows PC · "LanShare" is a working name and can be changed
 
 ## 1. Goals and scope
 
@@ -362,20 +362,24 @@ Each milestone has a result that can be verified in acceptance testing. Finish o
 
 - Prerequisite: start only after you create the GitHub repository and give me its URL (finish the Mac version before that)
 - Windows adaptation: path rules, Recycle Bin, firewall prompt, tray, allow only one running instance
-- Progress (2026-10-15): the code is pushed to GitHub (DEFY-AN94/LanShare). The items below are done on the `windows-m6` branch and are waiting for CI to verify them on Windows:
-  - The installer (NSIS, installs to Program Files) adds a firewall rule automatically: it allows only Private networks and the local subnet
+- Status: merged into `main` through PR #1 (2026-10-15). CI on Windows passes clippy, all Rust tests and the API end-to-end test, and builds the installer. **Not accepted yet: the installer has not been run on a real Windows PC.**
+- Done (2026-10-15; the code is on GitHub at DEFY-AN94/LanShare):
+  - The installer (NSIS, installs to Program Files) adds a firewall rule automatically: it allows only Private networks and the local subnet; uninstalling removes it
   - At runtime, detect when Windows is set to "Public network", and prompt on the Settings page and in the Add device window to switch it to a Private network
-  - Before deleting, check the drive type, and refuse to delete on USB drives / network shares (they have no Recycle Bin); run Recycle Bin operations on a separate thread to avoid COM initialization conflicts
+  - Before deleting, check the drive type, and refuse to delete on USB flash drives / network shares (they have no Recycle Bin); run Recycle Bin operations on a separate thread to avoid COM initialization conflicts
   - VPN adapters (point-to-point links, common VPN names) no longer appear in the QR code address
-  - CI: on Windows, run clippy, all Rust tests and the API end-to-end tests, and build the Windows installer (macOS tests run only on PRs)
-- Open items from review (need compiling and hands-on testing on Windows):
-  - The installer adds a firewall rule (allows only Private networks); runtime detection of "Public network" with a prompt on the Settings page / Add device window
-  - Before deleting, check whether the drive has a Recycle Bin (USB drives and network shares do not); if not, refuse, to avoid the permanent-delete confirmation dialog
-  - VPN adapter ordering: keep a full-tunnel VPN's 10.x address from coming first in the QR code
-  - Compile all `cfg(windows)` code in CI to verify it (hidden attribute, Zone.Identifier, long paths, UNC paths)
-- GitHub Actions: on every push, run tests on macOS and Windows, and package .msi / .exe as build artifacts
+  - Upload handlers read any request body they left unread before answering; otherwise the connection reset on Windows discarded the response, and a retried upload that had gone through looked failed
+  - All `cfg(windows)` code (hidden attribute, Zone.Identifier, long paths, UNC paths) compiles in CI, and all Rust tests pass on Windows
+  - CI: on Windows, run clippy, all Rust tests and the API end-to-end test, and build the Windows installer; the end-to-end test fails the job when any check fails (macOS tests run only on PRs)
+- GitHub Actions: on every push to `main` and on every PR, run the tests and package the NSIS `.exe` installer as the build artifact `LanShare-windows-x64`
+- Still to test on a real Windows PC (or the VM):
+  - Install and uninstall: the SmartScreen and administrator prompts; the firewall rule is added (Private networks and the local subnet only) and removed again
+  - The "Public network" warning on the Settings page and in the Add device window
+  - Delete refusal on USB flash drives / network shares
+  - With a full-tunnel VPN connected, the QR code still shows the LAN address
+  - The app window, tray icon and notifications; files from the phone get Zone.Identifier
 - Install and test in a Windows 11 ARM virtual machine on the Mac
-- Acceptance: Actions produces the installers; after installing in the VM, it can complete pairing and transfers with the iPhone (Simulator)
+- Acceptance: Actions produces the installer; after installing on Windows, it can complete pairing and transfers with an iPhone
 
 **M7 Enhancements (pick as needed)**
 
