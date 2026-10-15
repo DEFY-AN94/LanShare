@@ -1362,3 +1362,10 @@ h2 {
   width: 18px;
   height: 18px;
 }
+
+.banner-block {
+  border-radius: 10px;
+  margin-bottom: 12px;
+  align-items: flex-start;
+  line-height: 1.5;
+}

@@ -2,6 +2,7 @@
 
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -13,7 +14,7 @@ use crate::core::events::Audience;
 use crate::core::model::{MessageOut, MessagePage};
 use crate::core::paths::sanitize_filename;
 use crate::core::state::{INBOX_DIR, SENT_DIR, Shared};
-use crate::core::transfer::{receive_upload, serve_path};
+use crate::core::transfer::{REJECTED_UPLOAD_DRAIN, discard_body, receive_upload, serve_path};
 use crate::core::util::{now_ms, preview};
 
 const MAX_TEXT_CHARS: usize = 100_000;
@@ -113,20 +114,32 @@ pub async fn upload(
     State(state): State<Shared>,
     Extension(session): Extension<Session>,
     Query(q): Query<UploadQuery>,
+    headers: HeaderMap,
     body: Body,
 ) -> ApiResult<Json<MessageOut>> {
-    let (device_id, device_name) = conversation(&state, &session, q.device.as_deref())?;
+    let mut body = Some(body);
+    let result = store_upload(&state, &session, &q, &mut body).await;
+    // Left unread by a retry that already went through, or by a rejection.
+    if let Some(rest) = body {
+        discard_body(&headers, rest, if result.is_ok() { u64::MAX } else { REJECTED_UPLOAD_DRAIN }).await;
+    }
+    result.map(Json)
+}
+
+async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, body: &mut Option<Body>) -> ApiResult<MessageOut> {
+    let (device_id, device_name) = conversation(state, session, q.device.as_deref())?;
     let client_id = valid_client_id(q.client_id.as_deref())?;
     // A retried upload that already went through returns the original message.
     if let Some(cid) = client_id
         && let Some(existing) = state.db.message_by_client_id(&device_id, session.is_host(), cid)?
     {
-        return Ok(Json(state.message_out(existing)));
+        return Ok(state.message_out(existing));
     }
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
     let sandbox = state.sandbox();
     let dir = sandbox.ensure_subdir(if session.is_host() { SENT_DIR } else { INBOX_DIR })?;
-    let (path, size) = receive_upload(&state, &session, body, &dir, &name).await?;
+    let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
+    let (path, size) = receive_upload(state, session, body, &dir, &name).await?;
     let rel = sandbox.relative(&path).ok_or_else(|| ApiError::internal("upload landed outside the shared folder"))?;
     let final_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
     let mime = mime_guess::from_path(&final_name).first_or_octet_stream().to_string();
@@ -146,8 +159,8 @@ pub async fn upload(
     })?;
     let out = state.message_out(row);
     state.emit_files_changed(rel.rsplit_once('/').map(|(d, _)| d).unwrap_or(""));
-    after_insert(&state, &session, &device_name, &out, is_new);
-    Ok(Json(out))
+    after_insert(state, session, &device_name, &out, is_new);
+    Ok(out)
 }
 
 #[derive(Deserialize)]

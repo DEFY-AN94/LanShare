@@ -113,6 +113,12 @@ export function SettingsPage() {
 
       <section className="card">
         <h3 className="card-title">网络</h3>
+        {info.network_warning && (
+          <div className="banner banner-warn banner-block">
+            <Icon name="alert" size={16} />
+            <span>{info.network_warning}</span>
+          </div>
+        )}
         {info.addresses.length === 0 && <p className="text-danger">没有找到局域网地址，请检查网络连接。</p>}
         {info.addresses.map((a) => {
           const url = `https://${a.ip}:${info.port}`;

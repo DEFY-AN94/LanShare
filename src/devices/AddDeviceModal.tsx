@@ -62,6 +62,12 @@ export function AddDeviceModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         {error && <p className="text-danger">{error}</p>}
+        {session?.network_warning && (
+          <div className="banner banner-warn banner-block">
+            <Icon name="alert" size={16} />
+            <span>{session.network_warning}</span>
+          </div>
+        )}
         {session && session.urls.length === 0 && (
           <p className="text-danger">没有找到可用的局域网地址。请确认电脑已连接 Wi-Fi 或网线。</p>
         )}

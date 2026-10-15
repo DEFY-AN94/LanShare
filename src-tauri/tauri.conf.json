@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.lanshare.desktop",
   "build": {
-    "beforeDevCommand": { "script": "npm run build", "wait": true },
+    "beforeDevCommand": {
+      "script": "npm run build",
+      "wait": true
+    },
     "beforeBuildCommand": "npm run build"
   },
   "app": {
@@ -27,6 +30,17 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/hooks.nsh",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
     }
   }
 }

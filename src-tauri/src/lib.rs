@@ -192,9 +192,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to start LanShare");
 
-    app.run(|app, event| match event {
+    // `_app` is only needed for the macOS Dock "reopen" event.
+    app.run(|_app, event| match event {
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => show_main_window(app),
+        RunEvent::Reopen { .. } => show_main_window(_app),
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         _ => {}
     });

@@ -28,6 +28,7 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         ca_name: state.tls.ca_name(),
         paused: state.is_paused(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        network_warning: state.network_warning(),
     })
 }
 
@@ -58,7 +59,7 @@ pub async fn start_pairing(State(state): State<Shared>) -> Json<PairingSession> 
             PairingUrl { qr_svg: qr_svg(&url), url, ip: a.ip, iface: a.iface }
         })
         .collect();
-    Json(PairingSession { code, expires_at, urls, ca_fingerprint: state.tls.ca_fingerprint() })
+    Json(PairingSession { code, expires_at, urls, ca_fingerprint: state.tls.ca_fingerprint(), network_warning: state.network_warning() })
 }
 
 pub async fn cancel_pairing(State(state): State<Shared>) -> StatusCode {

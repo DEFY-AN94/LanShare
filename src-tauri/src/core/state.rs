@@ -40,6 +40,8 @@ pub struct AppState {
     pub bridge: Arc<dyn HostBridge>,
     pub host_name: String,
     addresses: RwLock<Vec<Address>>,
+    /// Shown in the host UI when the OS is likely to block phones (Windows "Public" network).
+    network_warning: RwLock<Option<String>>,
     /// Serializes "pick a free name + rename" so two uploads never clobber each other.
     pub upload_lock: tokio::sync::Mutex<()>,
     /// Devices removed while this process runs; their in-flight transfers stop.
@@ -85,6 +87,7 @@ impl AppState {
             bridge: p.bridge,
             host_name: p.host_name,
             addresses: RwLock::new(p.addresses),
+            network_warning: RwLock::new(None),
             upload_lock: tokio::sync::Mutex::new(()),
             revoked: Mutex::new(HashSet::new()),
             watcher: Mutex::new(None),
@@ -143,6 +146,20 @@ impl AppState {
 
     pub fn addresses(&self) -> Vec<Address> {
         self.addresses.read().unwrap().clone()
+    }
+
+    pub fn network_warning(&self) -> Option<String> {
+        self.network_warning.read().unwrap().clone()
+    }
+
+    /// Returns true if the warning changed.
+    pub fn set_network_warning(&self, w: Option<String>) -> bool {
+        let mut cur = self.network_warning.write().unwrap();
+        if *cur == w {
+            return false;
+        }
+        *cur = w;
+        true
     }
 
     pub fn address_ips(&self) -> Vec<IpAddr> {

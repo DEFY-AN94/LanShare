@@ -5,6 +5,7 @@ use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -15,7 +16,7 @@ use crate::core::error::{ApiError, ApiResult};
 use crate::core::model::{DirListing, FileEntry};
 use crate::core::paths::{Sandbox, sanitize_filename, segments};
 use crate::core::state::{INBOX_DIR, SENT_DIR, Shared};
-use crate::core::transfer::{receive_upload, serve_path};
+use crate::core::transfer::{REJECTED_UPLOAD_DRAIN, discard_body, receive_upload, serve_path};
 
 fn require_write(session: &Session) -> ApiResult<()> {
     if session.can_write() { Ok(()) } else { Err(ApiError::forbidden("这台设备只有读取权限")) }
@@ -138,17 +139,29 @@ pub async fn upload(
     State(state): State<Shared>,
     Extension(session): Extension<Session>,
     Query(q): Query<UploadQuery>,
+    headers: HeaderMap,
     body: Body,
 ) -> ApiResult<Json<FileEntry>> {
-    require_write(&session)?;
-    require_visible(&session, &q.dir)?;
+    let mut body = Some(body);
+    let result = store_upload(&state, &session, &q, &mut body).await;
+    // Left unread only when the upload was rejected up front.
+    if let Some(rest) = body {
+        discard_body(&headers, rest, REJECTED_UPLOAD_DRAIN).await;
+    }
+    result.map(Json)
+}
+
+async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, body: &mut Option<Body>) -> ApiResult<FileEntry> {
+    require_write(session)?;
+    require_visible(session, &q.dir)?;
     let sandbox = state.sandbox();
     let dir = sandbox.resolve_dir(&q.dir)?;
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
-    let (path, _) = receive_upload(&state, &session, body, &dir, &name).await?;
+    let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
+    let (path, _) = receive_upload(state, session, body, &dir, &name).await?;
     let entry = entry_for(&sandbox, &path).ok_or_else(|| ApiError::internal("uploaded file vanished"))?;
     state.emit_files_changed(&sandbox.relative(&dir).unwrap_or_default());
-    Ok(Json(entry))
+    Ok(entry)
 }
 
 #[derive(Deserialize)]
@@ -207,6 +220,23 @@ pub struct DeleteBody {
     path: String,
 }
 
+/// Windows only keeps a Recycle Bin on fixed disks. On USB sticks and network
+/// shares the shell would ask on the desktop to delete permanently instead.
+#[cfg(windows)]
+fn has_recycle_bin(path: &FsPath) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else { return false };
+    let root = match prefix.kind() {
+        Prefix::Disk(d) | Prefix::VerbatimDisk(d) => format!("{}:\\", d as char),
+        _ => return false, // UNC paths: network shares
+    };
+    let wide: Vec<u16> = std::ffi::OsStr::new(&root).encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+    let kind = unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) };
+    kind == 3 // DRIVE_FIXED
+}
+
 pub fn move_to_trash(path: &FsPath) -> Result<(), trash::Error> {
     #[allow(unused_mut)]
     let mut ctx = trash::TrashContext::default();
@@ -229,10 +259,16 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
         other => other.into(),
     })?;
     let parent_rel = target.parent().and_then(|p| sandbox.relative(p)).unwrap_or_default();
-    // Trash APIs block (and need their own COM apartment on Windows).
-    tokio::task::spawn_blocking(move || move_to_trash(&target))
+    #[cfg(windows)]
+    if !has_recycle_bin(&target) {
+        return Err(ApiError::conflict("这个位置（U 盘或网络共享）没有回收站，为避免永久删除，请在电脑上处理这个文件"));
+    }
+    // A fresh thread each time: on Windows the trash crate sets up COM per
+    // thread and aborts if a pooled thread was already initialised differently.
+    tokio::task::spawn_blocking(move || std::thread::spawn(move || move_to_trash(&target)).join())
         .await
         .map_err(ApiError::internal)?
+        .map_err(|_| ApiError::internal("trash thread panicked"))?
         .map_err(|e| ApiError::internal(format!("move to trash failed: {e}")))?;
     state.emit_files_changed(&parent_rel);
     Ok(Json(json!({ "ok": true })))

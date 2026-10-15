@@ -88,6 +88,7 @@ pub struct PairingSession {
     pub urls: Vec<PairingUrl>,
     /// SHA-256 of the local CA, to compare with the profile on the phone.
     pub ca_fingerprint: String,
+    pub network_warning: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -110,4 +111,5 @@ pub struct HostOverview {
     pub ca_name: String,
     pub paused: bool,
     pub version: String,
+    pub network_warning: Option<String>,
 }
