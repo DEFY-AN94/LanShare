@@ -1,436 +1,436 @@
-# LanShare 项目计划
+# LanShare project plan
 
-> 局域网内 iPhone ↔ 电脑（macOS / Windows）的消息与文件传输工具。只走局域网，不经过任何云端。
+> A messaging and file-transfer tool for iPhone ↔ computer (macOS / Windows) on the local network. LAN only; nothing goes through any cloud.
 >
-> 文档日期：2026-10-15 · 状态：Mac 版 MVP 已完成（M0–M5，分支 `mac-mvp`；M5 真机验收见 4.1.1）；M6 等 GitHub 仓库 · "LanShare" 是工作名，可以改
+> Document date: 2026-10-15 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) in progress on branch `windows-m6` · "LanShare" is a working name and can be changed
 
-## 1. 目标与范围
+## 1. Goals and scope
 
-**要做的：**
+**In scope:**
 
-- 电脑端 App（macOS + Windows），作为局域网里的"服务端"
-- iPhone 用 Safari 浏览器访问电脑端（扫码配对），不需要安装 App
-- 两个独立模块：
-  - **消息**：类 iMessage 聊天，每条消息带快速复制按钮
-  - **文件**：iPhone 浏览电脑上的共享文件夹；iPhone ↔ 电脑互传文件
-- 安全与隐私是硬性要求
+- A desktop app (macOS + Windows) that acts as the "server" on the LAN
+- The iPhone reaches the desktop app through Safari (pairing by scanning a QR code); no app to install
+- Two separate modules:
+  - **Messages**: iMessage-style chat; every message has a quick copy button
+  - **Files**: the iPhone browses the shared folder on the computer; files transfer both ways, iPhone ↔ computer
+- Security and privacy are hard requirements
 
-**暂不做：**
+**Out of scope for now:**
 
-- 互联网 / 跨网络传输、云同步、账号体系
-- 原生 iOS App（等有付费开发者账号再做，见第 11 节）
-- 安卓（浏览器方案理论上能用，但不专门适配和测试）
+- Internet / cross-network transfer, cloud sync, user accounts
+- A native iOS app (later, once there is a paid developer account; see section 11)
+- Android (the browser approach works in theory, but there is no Android-specific adaptation or testing)
 
-## 2. 使用流程
+## 2. Usage flow
 
-**首次使用**
+**First use**
 
-1. 电脑安装并打开 LanShare → 自动生成证书、创建共享文件夹
-2. 电脑点「添加设备」，屏幕显示二维码
-3. iPhone 相机扫码 → Safari 打开 →（推荐）按引导安装证书 → 点「请求连接」
-4. 电脑弹窗，核对两边显示的确认码一致后点「允许」→ 配对完成
-5. iPhone 在 Safari 里「添加到主屏幕」，以后一点就开
+1. Install and open LanShare on the computer → it generates the certificates and creates the shared folder automatically
+2. On the computer, click **添加设备** (Add device); the screen shows a QR code
+3. Scan it with the iPhone camera → it opens in Safari → (recommended) install the certificate by following the guide → tap **请求连接** (Request connection)
+4. The computer shows a dialog; check that the confirmation codes on both sides match, then click **允许** (Allow) → pairing is done
+5. On the iPhone, use "Add to Home Screen" in Safari; after that, one tap opens it
 
-**日常使用**
+**Daily use**
 
-- 点主屏幕图标打开，底部两个标签：消息 / 文件
-- 电脑端常驻后台，收到消息弹系统通知
+- Open it from the Home Screen icon; two tabs at the bottom: **消息** (Messages) / **文件** (Files)
+- The desktop app keeps running in the background and shows a system notification when a message arrives
 
-## 3. 已确定的决策
+## 3. Decisions made
 
-| 事项 | 决定 | 原因 |
+| Topic | Decision | Reason |
 |---|---|---|
-| 架构 | 电脑端是服务端（Hub），iPhone 是浏览器客户端 | 手机不用装 App；数据只存在电脑上 |
-| 电脑端技术栈 | Tauri 2：Rust 核心 + 网页界面（React + TypeScript） | 电脑窗口和手机网页共用一套界面代码；安装包小（约 10 MB 级） |
-| 实时通道 | SSE（服务器推送）+ 普通 HTTPS 请求 | 实测可用；比 WebSocket 稳妥：旧版 iOS 的 WebSocket 对自签证书有已知问题 |
-| 手机端 | 只考虑 iPhone，用 Safari 网页 | 暂无付费开发者账号；免费账号装的 App 7 天过期 |
-| Windows 版 | GitHub Actions 自动打包；在 Mac 上用 Windows 虚拟机测试 | 手边没有 Windows 电脑 |
-| 原生 App | 远期，可考虑澳洲开发者账号 | 可行，见第 11 节 |
-| 开发顺序（2026-10-15 调整） | 本地 Git 起步，先做 Mac 版；GitHub Actions 和 Windows 版等你建好 GitHub 仓库后再做 | GitHub 仓库稍后创建 |
+| Architecture | The computer is the server (Hub); the iPhone is a browser client | No app to install on the phone; data lives only on the computer |
+| Desktop tech stack | Tauri 2: Rust core + web UI (React + TypeScript) | The desktop window and the phone web page share one UI codebase; small installer (on the order of 10 MB) |
+| Real-time channel | SSE (server push) + plain HTTPS requests | Tested and works; more reliable than WebSocket: WebSocket on older iOS has known issues with self-signed certificates |
+| Phone client | iPhone only, as a Safari web page | No paid developer account yet; apps installed with a free account expire after 7 days |
+| Windows version | GitHub Actions builds the packages automatically; test in a Windows VM on the Mac | No Windows computer at hand |
+| Native app | Long term; an Australian developer account is an option | Feasible; see section 11 |
+| Development order (changed 2026-10-15) | Start with local Git and build the Mac version first; GitHub Actions and the Windows version come after you create the GitHub repository | The GitHub repository will be created later |
 
-## 4. 可行性验证结果（2026-10-15）
+## 4. Feasibility results (2026-10-15)
 
-### 4.1 iPhone Safari 实测（iOS 27 模拟器，Safari 27）
+### 4.1 iPhone Safari tests (iOS 27 Simulator, Safari 27)
 
-用自签证书起了一个测试服务，在模拟器里逐项实测：
+Ran a test server with a self-signed certificate and tested each item in the Simulator:
 
-| 检查项 | 结果 |
+| Check | Result |
 |---|---|
-| 首次打开 | 显示「此连接不是私密连接」，点 显示详细信息 → 访问此网站 → 访问网站，共 3 步，同一地址只需一次 |
-| 点过之后是否算安全页面 | ✅ `isSecureContext = true`，所有需要安全环境的网页能力都能用 |
-| 复制按钮（Clipboard API） | ✅ 内容写入了 iPhone 剪贴板（从模拟器剪贴板读回核对过） |
-| 复制按钮（兜底方案 execCommand） | ✅ 同样可用 |
-| 实时推送（SSE） | ✅ |
-| WebSocket（wss） | ✅ iOS 27 上可用；旧版 iOS 有已知问题，所以仍选 SSE |
-| 系统分享面板（`navigator.share`） | ✅ 可用，用来做「存储到相册」 |
-| 在 iPhone 上信任电脑生成的根证书后 | ✅ 完全没有警告，地址栏正常。「带名称约束的 CA + 397 天服务器证书」这套参数被 iOS 接受 |
+| First visit | Shows "This Connection Is Not Private"; tap Show Details → visit this website → Visit Website; 3 steps in total, needed only once per address |
+| Secure page after clicking through? | ✅ `isSecureContext = true`; all web features that require a secure context work |
+| Copy button (Clipboard API) | ✅ The content reached the iPhone clipboard (verified by reading the Simulator clipboard back) |
+| Copy button (fallback: execCommand) | ✅ Also works |
+| Real-time push (SSE) | ✅ |
+| WebSocket (wss) | ✅ Works on iOS 27; older iOS has known issues, so SSE remains the choice |
+| System share sheet (`navigator.share`) | ✅ Works; used for **存储到相册** (Save to Photos) |
+| After trusting the computer's root certificate on the iPhone | ✅ No warnings at all; the address bar looks normal. iOS accepts the combination "CA with name constraints + 397-day server certificate" |
 
-**结论：浏览器方案在 iPhone 上可行。** 模拟器和真机用的是同一版 Safari 内核，但开工第一步（M0）仍在真机上花 5 分钟复测。
+**Conclusion: the browser approach works on the iPhone.** The Simulator and a real device use the same Safari engine version, but the first step of development (M0) is still a 5-minute re-test on a real device.
 
-### 4.1.1 真机结果（M5，2026-10-15，iPhone 16 Pro Max · iOS 27）
+### 4.1.1 Real-device results (M5, 2026-10-15, iPhone 16 Pro Max · iOS 27)
 
-| 检查项 | 结果 |
+| Check | Result |
 |---|---|
-| 扫码配对 | ✅ 二维码里是局域网地址（192.168.x.x），不是 127.0.0.1；macOS 防火墙首次运行要用户自己点「允许」 |
-| 从「照片图库」上传 | ⚠️ 一律转码：HEIC → JPEG、HEVC 视频 → H.264、PNG 截图 → JPEG，分辨率不变，视频可能变大。试过 4 种 `<input accept>` 写法（不写、`image/heic,…`、加 `*/*`、按扩展名列举），都不能避免 |
-| ProRAW（DNG） | ✅ 原样上传 |
-| 走「文件」App（照片先 分享 › 存储到「文件」，再「选取文件」） | ✅ 原片原样上传，选取时没有转换过程 |
-| 处理方式 | 不改 iPhone 设置（「设置 › 照片 › 传输到 Mac 或 PC › 保留原片」会影响 iCloud 照片的用户，有风险），只在 iPhone 上第一次点上传时弹一次说明（`src/components/PhotoTip.tsx`），用户可以选择快速传或走「文件」传原片 |
-| 上传中锁屏 | ✅ 约 600 MB 视频（局域网 30–40 MB/s）刚开始上传就锁屏，解锁后已传完。更长时间锁屏仍可能被 iOS 中断（断点续传在 M7） |
-| 添加到主屏幕 | ✅ 主屏幕 App 沿用 Safari 的配对凭证，打开直接进聊天 |
-| 没装证书时 | 主屏幕 App 每次打开都有证书警告，点「访问」能进 |
-| 主屏幕图标 | ✅（修复后）最初是灰色字母 L，分享面板里的图标却正常。原因：「添加到主屏幕」由另一个系统进程（SafariViewService）自己下载 apple-touch-icon，不沿用 Safari 的「继续访问」。模拟器里没信任证书时能复现，信任后正常；真机上证书已信任仍失败——电脑日志里能看到手机的部分后台连接以 `CertificateUnknown` 拒绝证书，而 Safari 和主屏幕 App 本身没有警告。修复：构建时把图标以 data: URL 直接写进页面（`vite.config.ts`），不再需要下载，真机复验正常。图标同时改成标准尺寸（180 / 192 / 512） |
-| 证书描述文件安装 | ✅ 指纹位置：设置 › 已下载描述文件 › 更多详细信息 › 证书名称 › 最底部「指纹」，SHA-256 与电脑上的一致。安装时提示「会更改 iPhone 上的设置」「未验证」「未管理的根证书」——是所有描述文件的通用提示，这个描述文件只含一个证书。装好并在「证书信任设置」里打开后，不再有任何警告 |
-| 证书名称 | ✅（修复后）原来每个根证书都叫「LanShare Local CA (Mac)」：开发运行、正式版、每次「重置证书」各生成一个，在「VPN 与设备管理」和「证书信任设置」里一模一样，分不清哪个是旧的。现在新证书名称末尾带 6 位编号（取自这个证书的密钥标识符，如「LanShare Local CA (Mac) 2DD31B」），电脑端「设置 › 安全」和 iPhone 安装引导都显示当前证书的完整名称。已经装好的旧证书不会为了改名重新生成，名称保持不变 |
-| 证书里的 `.local` 名称 | ✅（修复后）原来取主机名，这台 Mac 上是 `mac.local`（路由器分配的主机名），而 Bonjour 实际应答的是 `MyMac.local`，M7 的 `.local` 访问会因此失败。现在 macOS 上用 Bonjour 本地主机名（系统设置 › 通用 › 共享 › 本地主机名），取不到时才退回主机名；改名后服务器证书自动重签 |
-| 电脑名称 | ✅（修复后）手机顶栏、配对页和新证书名称里的电脑名原来取主机名，这台 Mac 上显示成「Mac」。现在 macOS 上用「电脑名称」（系统设置 › 通用 › 共享，即 `scutil --get ComputerName`，这里是「MyMac」），取不到时才退回主机名；Windows 不变。改名后重启 LanShare 生效；已有的根证书不会因此重新生成 |
+| Pairing by QR scan | ✅ The QR code holds the LAN address (192.168.x.x), not 127.0.0.1; on first run, the user must click "Allow" in the macOS firewall prompt themselves |
+| Upload from "Photo Library" | ⚠️ Always transcoded: HEIC → JPEG, HEVC video → H.264, PNG screenshots → JPEG; resolution stays the same, videos may get larger. Tried 4 `<input accept>` variants (omitted, `image/heic,…`, adding `*/*`, listing extensions); none of them avoids it |
+| ProRAW (DNG) | ✅ Uploaded unchanged |
+| Via the Files app (in Photos, first Share › Save to Files, then "Choose Files") | ✅ The original uploads unchanged; no conversion step when picking |
+| Handling | Do not change iPhone settings ("Settings › Photos › Transfer to Mac or PC › Keep Originals" affects iCloud Photos users and is risky). Instead, show a one-time note on the iPhone the first time the user taps upload (`src/components/PhotoTip.tsx`); the user can pick a quick upload or send originals via Files |
+| Screen locked during upload | ✅ Locked the screen right after a ~600 MB video upload started (LAN at 30–40 MB/s); after unlocking, the upload had finished. A longer lock can still get interrupted by iOS (resumable uploads are in M7) |
+| Add to Home Screen | ✅ The Home Screen app reuses Safari's pairing credential and opens straight into the chat |
+| Without the certificate installed | The Home Screen app shows a certificate warning on every launch; tapping "Visit" gets through |
+| Home Screen icon | ✅ (after fix) At first it was a gray letter L, while the icon in the share sheet looked fine. Cause: "Add to Home Screen" downloads apple-touch-icon in a separate system process (SafariViewService), which does not reuse Safari's "continue to visit" choice. In the Simulator it reproduces while the certificate is untrusted and works once it is trusted; on a real device it still failed with the certificate trusted — the computer's log shows some of the phone's background connections rejecting the certificate with `CertificateUnknown`, while Safari and the Home Screen app themselves show no warning. Fix: at build time, embed the icon in the page as a data: URL (`vite.config.ts`), so no download is needed; re-tested on a real device and it works. The icons were also changed to standard sizes (180 / 192 / 512) |
+| Certificate profile install | ✅ Fingerprint location: Settings › Profile Downloaded › More Details › certificate name › "Fingerprints" at the very bottom; the SHA-256 matches the one on the computer. During install, iOS shows "will change settings on your iPhone", "Not Verified" and "Unmanaged Root Certificate" — generic warnings shown for every profile; this profile contains only one certificate. Once it is installed and enabled in "Certificate Trust Settings", no warnings remain |
+| Certificate name | ✅ (after fix) Every root certificate used to be named "LanShare Local CA (Mac)": each dev run, the release build and every **重置证书** (Reset certificate) created its own, and they looked identical in "VPN & Device Management" and "Certificate Trust Settings", so there was no way to tell which one was old. New certificate names now end with a 6-character ID (taken from the certificate's key identifier, e.g. "LanShare Local CA (Mac) 2DD31B"), and both **设置 › 安全** (Settings › Security) in the desktop app and the iPhone install guide show the current certificate's full name. Old certificates that are already installed are not regenerated just to rename them; their names stay the same |
+| The `.local` name in the certificate | ✅ (after fix) It used to come from the hostname, which on this Mac is `mac.local` (a hostname assigned by the router), while Bonjour actually answers to `MyMac.local`, so `.local` access in M7 would fail. On macOS it now uses the Bonjour local hostname (System Settings › General › Sharing › Local hostname) and falls back to the hostname only when that is unavailable; after a rename, the server certificate is re-signed automatically |
+| Computer name | ✅ (after fix) The computer name in the phone's top bar, on the pairing page and in new certificate names used to come from the hostname, which shows as "Mac" on this Mac. On macOS it now uses "Computer name" (System Settings › General › Sharing, i.e. `scutil --get ComputerName`, here "MyMac") and falls back to the hostname only when that is unavailable; Windows is unchanged. A rename takes effect after restarting LanShare; existing root certificates are not regenerated because of it |
 
-### 4.2 Windows 版（手边没有 Windows）
+### 4.2 Windows version (no Windows machine at hand)
 
-- **打包**：官方的 `tauri-apps/tauri-action@v1` 在 GitHub 提供的 Windows 机器（`windows-latest`）上编译，产出 `.msi` / `.exe` 安装包。可以只作为构建产物下载，不必发布 Release。
-- **费用**：私有仓库每月有 2,000 分钟免费额度；Windows 机器单价比 Linux 高，额度消耗得更快。Rust 冷编译一次大约 10–20 分钟，个人项目够用。**不绑定付款方式就不会扣费**，额度用完只会暂停运行。公开仓库完全免费。
-- **测试**：
-  1. 自动测试：每次推送都在 Windows 上跑 Rust 单元测试和接口测试（路径规则、文件读写、接口）
-  2. 手动测试：在这台 Mac 上装 Windows 11 ARM 虚拟机（UTM 免费 / VMware Fusion 免费 / Parallels 付费），安装 CI 打出来的包实际使用。x64 安装包能在 ARM 版 Windows 上模拟运行，也可以让 CI 额外打一个 ARM64 版
-- **代码签名**：没有签名时，首次运行 Windows 会提示「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」即可。自用没问题，以后需要再买签名。
+- **Packaging**: the official `tauri-apps/tauri-action@v1` builds on a GitHub-hosted Windows machine (`windows-latest`) and produces `.msi` / `.exe` installers. They can simply be downloaded as build artifacts; there is no need to publish a Release.
+- **Cost**: private repositories get 2,000 free minutes per month; Windows machines cost more per minute than Linux, so the quota runs out faster. A cold Rust build takes about 10–20 minutes, which is enough for a personal project. **With no payment method attached, nothing is charged**; when the quota runs out, runs just pause. Public repositories are completely free.
+- **Testing**:
+  1. Automated tests: every push runs Rust unit tests and API tests on Windows (path rules, file reads and writes, API)
+  2. Manual tests: install a Windows 11 ARM VM on this Mac (UTM free / VMware Fusion free / Parallels paid), install the package CI builds and use it for real. The x64 installer runs under emulation on Windows on ARM; CI can also build an extra ARM64 version
+- **Code signing**: without a signature, Windows shows "Windows protected your PC" on first run; click "More info → Run anyway". Fine for personal use; buy code signing later if it becomes necessary.
 
-### 4.3 原生 App 与澳洲开发者账号
+### 4.3 Native app and an Australian developer account
 
-结论：**可行**，详见第 11 节。
+Conclusion: **feasible**; see section 11 for details.
 
-## 5. 系统架构
+## 5. System architecture
 
 ```
-电脑端 LanShare（macOS / Windows，Tauri 2）
-├─ 窗口：网页界面，访问 http://127.0.0.1:<随机端口>（本机服务，不对外）
-├─ Rust 核心
-│  ├─ 局域网服务：HTTPS，0.0.0.0:39210（被占用就顺延），只接受内网 IP
-│  ├─ 本机服务：HTTP，只监听 127.0.0.1，只给电脑端自己的窗口用，用启动时生成的随机令牌登录
-│  ├─ 证书：本机根证书（CA）+ 服务器证书，自动生成，IP 变化时自动更新
-│  ├─ 配对与鉴权、消息、文件、实时推送（SSE）
-│  └─ 存储：SQLite（设备、消息）+ 共享文件夹（文件本身）
-└─ 系统集成：托盘 / 菜单栏、系统通知、在 Finder / 资源管理器中显示、开机自启
+LanShare desktop app (macOS / Windows, Tauri 2)
+├─ Window: web UI, loads http://127.0.0.1:<random port> (local service, not exposed)
+├─ Rust core
+│  ├─ LAN service: HTTPS, 0.0.0.0:39210 (next port if taken), accepts private IPs only
+│  ├─ Local service: HTTP, listens on 127.0.0.1 only, used only by the desktop app's own window, logs in with a random token generated at startup
+│  ├─ Certificates: local root certificate (CA) + server certificate, generated automatically, renewed automatically when the IP changes
+│  ├─ Pairing and auth, messages, files, real-time push (SSE)
+│  └─ Storage: SQLite (devices, messages) + shared folder (the files themselves)
+└─ System integration: tray / menu bar, system notifications, Show in Finder / File Explorer, launch at login
           ▲
-          │  同一个 Wi-Fi，HTTPS 加密
+          │  Same Wi-Fi, HTTPS-encrypted
           ▼
-iPhone Safari：打开 https://<电脑IP>:39210，配对后凭 Cookie 里的凭证访问
+iPhone Safari: opens https://<computer IP>:39210; after pairing, it authenticates with the credential stored in a cookie
 ```
 
-要点：
+Key points:
 
-- 两个服务共用同一套接口和网页界面。只有「本机服务 + 本机令牌」拥有主机权限（审批配对、管理设备、改设置），从局域网来的请求永远拿不到。
-- 接口不绑定具体客户端：以后做原生 App，只需要再支持 `Authorization: Bearer` 令牌。
+- Both services share the same API and web UI. Only "local service + local token" has host privileges (approving pairing, managing devices, changing settings); requests from the LAN can never get them.
+- The API is not tied to a specific client: to add a native app later, the API only needs to also accept `Authorization: Bearer` tokens.
 
-## 6. 功能规格
+## 6. Functional spec
 
-### 6.1 消息模块
+### 6.1 Messages module
 
-- 每台配对设备一个对话。电脑端有对话列表；iPhone 只看到自己和电脑之间的对话
-- 消息类型：文字、图片 / 文件
-- 气泡界面：自己的在右（蓝色），对方的在左；按时间分组；显示发送状态（发送中 / 已送达 / 失败可重试）
-- **复制按钮**：每条文字消息旁常驻一个小按钮，点一下就复制，图标变成 ✓ 并提示「已复制」；长按可以只选一部分文字
-- 链接可以点（只识别 http / https）；长文本和代码用等宽字体显示
-- 历史记录分页加载；断线后自动重连并补齐期间的消息；发送失败自动排队重发（用 client_id 去重）
-- 电脑端：把文件拖进聊天窗口就发送；可以直接粘贴截图发送；收到消息弹系统通知
-- 图片消息显示预览。文件消息显示文件名和大小：iPhone 点开是下载 / 预览；电脑点开是用默认程序打开或在文件夹中显示
-- 聊天里收发的文件存放位置：iPhone → 电脑存到 `共享文件夹/收件箱/`；电脑 → iPhone 存到 `共享文件夹/已发送/`。这两个文件夹只在电脑上可见，手机只能通过各自的聊天消息打开附件（防止多台设备互相看到对方的文件）
+- One conversation per paired device. The desktop app has a conversation list; the iPhone sees only its own conversation with the computer
+- Message types: text, image / file
+- Bubble layout: your own messages on the right (blue), the other side's on the left; grouped by time; send status shown (sending / delivered / failed, with retry)
+- **Copy button**: every text message has a small, always-visible button next to it. One tap copies the text, the icon turns into ✓, and a **已复制** (Copied) toast appears; long-press to select only part of the text
+- Links are clickable (only http / https are recognized); long text and code are shown in a monospace font
+- History loads in pages; after a disconnect the client reconnects automatically and fills in the messages it missed; failed sends are queued and resent automatically (deduplicated by client_id)
+- Desktop app: drag a file into the chat window to send it; paste a screenshot to send it directly; incoming messages show a system notification
+- Image messages show a preview. File messages show the file name and size: on the iPhone, tapping one downloads / previews it; on the computer, clicking one opens it in the default app or shows it in its folder
+- Where files sent in chat are stored: iPhone → computer in `<shared folder>/收件箱/` (Inbox); computer → iPhone in `<shared folder>/已发送/` (Sent). These two folders are visible only on the computer. Each phone can open attachments only through its own chat messages (so devices cannot see each other's files)
 
-### 6.2 文件模块
+### 6.2 Files module
 
-- 共享文件夹默认在 `~/LanShare`（Windows 是 `C:\Users\<你>\LanShare`），可以在设置里改
-- 浏览：顶部显示路径，文件夹排在前面，显示名称、大小和修改时间；隐藏 `.` 开头的文件和系统文件
-- 预览：图片、视频（能拖动进度条，用 HTTP Range 实现）、音频、PDF、纯文本
-- iPhone 下载：存到「文件」App；图片和视频可以通过分享面板「存储到相册」
-- iPhone 上传：从相册、相机或「文件」里选，可多选，显示进度和速度，可以取消；遇到同名文件自动改名为 `名称 (1).jpg`
-- 管理：新建文件夹、重命名、删除（**删除是放进回收站，不是永久删除**）
-- 权限：每台设备可以单独设为「读写」或「只读」
-- 实时刷新：任何一端改了文件，其他正在看同一个文件夹的设备会自动刷新
-- 以后（M7）：断点续传、缩略图、多选后打包下载
+- The shared folder defaults to `~/LanShare` (on Windows, `C:\Users\<you>\LanShare`) and can be changed in settings
+- Browsing: the path is shown at the top, folders come first, and each entry shows name, size and modified time; files starting with `.` and system files are hidden
+- Preview: images, video (with a draggable progress bar, via HTTP Range), audio, PDF, plain text
+- iPhone download: saves to the Files app; images and videos can be saved to Photos from the share sheet ("Save Image" / "Save Video")
+- iPhone upload: pick from the photo library, the camera or Files; supports multi-select; shows progress and speed; can be cancelled; on a name clash the file is renamed to `name (1).jpg` automatically
+- Management: new folder, rename, delete (**delete moves items to the Trash / Recycle Bin; it is not permanent**)
+- Permissions: each device can be set individually to **读写** (Read-write) or **只读** (Read-only)
+- Live refresh: when any side changes a file, other devices viewing the same folder refresh automatically
+- Later (M7): resumable transfers, thumbnails, multi-select and download as an archive
 
-### 6.3 设备与配对
+### 6.3 Devices and pairing
 
-1. 电脑端点「添加设备」，显示二维码（链接里带一次性令牌，2 分钟内有效）和 6 位配对码（扫不了码时手动输入）
-2. iPhone 相机扫码，用 Safari 打开（第一次要点过证书警告，或者先装好证书）→ 填设备名（默认「iPhone」）→ 请求连接
-3. 两边同时显示 4 位**确认码**，电脑弹窗：「iPhone 请求连接，确认码 4827，是否允许？」
-4. 点允许后，iPhone 拿到长期凭证（HttpOnly + Secure Cookie）。以后打开网址或点主屏幕图标就能直接用
-5. 电脑端「设备」页可以查看在线状态和最后活动时间，也可以改名、改权限、移除设备。移除后凭证立即失效，同时删除这台设备的聊天记录
+1. On the desktop app, click **添加设备** (Add device). It shows a QR code (the link carries a one-time token, valid for 2 minutes) and a 6-digit pairing code (for manual entry when the QR code cannot be scanned)
+2. Scan the code with the iPhone Camera and open it in Safari (the first time, tap through the certificate warning, or install the certificate first) → enter a device name (default "iPhone") → **请求连接** (Request connection)
+3. Both sides show the 4-digit **confirmation code** at the same time, and the computer shows a dialog: "iPhone 请求连接，确认码 4827，是否允许？" (iPhone wants to connect, confirmation code 4827. Allow?)
+4. After **允许** (Allow) is clicked, the iPhone receives a long-lived credential (HttpOnly + Secure cookie). From then on, the iPhone can use the app directly by opening the URL or tapping the Home Screen icon
+5. The **设备** (Devices) page on the desktop app shows each device's online status and last activity time, and lets you rename a device, change its permissions or remove it. Removing a device invalidates its credential immediately and deletes that device's chat history
 
-### 6.4 界面
+### 6.4 UI
 
-**电脑端窗口**：左侧一列图标，分别是 消息 / 文件 / 设备 / 设置
+**Desktop window**: a column of icons on the left for Messages / Files / Devices / Settings
 
-- 消息：对话列表 + 聊天区
-- 文件：共享文件夹浏览器，比手机多「在 Finder / 资源管理器中显示」和「用默认程序打开」
-- 设备：设备列表 + 添加设备（二维码面板）
-- 设置：共享文件夹位置、局域网地址和端口、证书指纹、「暂停共享」开关、重置证书、清空聊天记录
-- 关掉窗口后继续在后台运行：macOS 点 Dock 图标恢复，Windows 从托盘恢复
+- Messages: conversation list + chat area
+- Files: shared folder browser, with two actions the phone does not have: **在 Finder / 资源管理器中显示** (Show in Finder / File Explorer) and **用默认程序打开** (Open with default app)
+- Devices: device list + Add device (QR code panel)
+- Settings: shared folder location, LAN address and port, certificate fingerprint, **暂停共享** (Pause sharing) toggle, reset certificate, clear chat history
+- Closing the window keeps the app running in the background: on macOS, click the Dock icon to bring it back; on Windows, restore it from the tray
 
-**iPhone 网页**：底部两个标签，消息 / 文件
+**iPhone web page**: two tabs at the bottom, Messages / Files
 
-- 适配刘海和底部安全区；键盘弹出时输入框不被挡住；输入框字号不小于 16px，避免 Safari 自动放大页面
-- 用网址里 `#` 后面的部分记录当前页面和文件夹路径，在 Safari 里左滑能正常返回上一级
-- 支持「添加到主屏幕」（有自己的图标，打开后全屏显示）
-- 证书安装引导页（图文步骤）
+- Handles the notch and the bottom safe area; the input box stays visible when the keyboard opens; the input font size is at least 16px so Safari does not zoom the page
+- The part of the URL after `#` records the current page and folder path, so swiping back in Safari goes up one level as expected
+- Supports "Add to Home Screen" (with its own icon; opens full screen)
+- Certificate install guide page (illustrated steps)
 
-## 7. 安全与隐私设计
+## 7. Security and privacy design
 
-### 7.1 要防范什么
+### 7.1 What to defend against
 
-同一个 Wi-Fi 下的其他设备（室友、访客、公共网络上的陌生人、被入侵的智能家居设备）可能会：
+Other devices on the same Wi-Fi (roommates, guests, strangers on a public network, compromised smart home devices) may:
 
-- 扫描端口、伪装成你的电脑（中间人攻击）、监听流量
-- 暴力猜配对码
-- 借文件接口读取共享文件夹以外的文件
-- 发送恶意内容来攻击网页
+- Scan ports, impersonate your computer (man-in-the-middle), or eavesdrop on traffic
+- Brute-force the pairing code
+- Use the file API to read files outside the shared folder
+- Send malicious content to attack the web page
 
-### 7.2 具体措施
+### 7.2 Measures
 
-| 风险 | 措施 |
+| Risk | Measure |
 |---|---|
-| 被监听 | 全程 HTTPS（TLS 1.2 / 1.3），局域网上不提供任何不加密的接口 |
-| 有人冒充电脑（中间人） | 建议在 iPhone 上安装电脑生成的根证书，并在安装前**核对证书指纹**（电脑屏幕上显示的 SHA-256 与 iPhone 描述文件详情里的一致）。核对过的证书装好后，Safari 会严格校验，冒充者通不过。不核对就安装，第一次下载证书时仍可能被冒充；不装证书则只能靠网络本身可信 |
-| 未授权访问 | 配对必须在电脑端人工确认，并核对确认码；之后用 256 位随机凭证（电脑只保存它的哈希值），随时可以吊销 |
-| 暴力猜码 | 二维码里的令牌只能用一次，2 分钟过期；6 位配对码限速（每个 IP 每分钟 5 次，累计失败 10 次就作废） |
-| 读取共享文件夹以外的文件 | 所有路径都限制在共享文件夹内：拒绝 `..`、绝对路径、指向外面的符号链接、隐藏文件、Windows 保留名（CON、NUL 等）和其他特殊写法 |
-| 跨站请求伪造 | Cookie 设为 SameSite=Strict；所有写操作必须带自定义请求头，并校验 Origin |
-| 网页注入（XSS） | 消息一律按纯文本显示；启用严格的内容安全策略（CSP）；共享文件夹里的 HTML、SVG 这类文件只允许下载或在沙箱里打开，不能在应用的网页里执行脚本 |
-| 本机服务被恶意网页借道访问（DNS 重绑定） | 本机服务只监听 127.0.0.1，校验 Host 头，并且必须持有启动时生成的随机令牌 |
-| 外网访问 | 只接受内网 IP（10.x、172.16–31.x、192.168.x、链路本地地址）；不做 UPnP 端口映射；Windows 防火墙规则只放行「专用网络」 |
-| 收到的文件被当成程序运行 | 手机传来的文件在 macOS 上加「来自网络」隔离标记（Windows 加 Zone.Identifier）；电脑端点开程序、脚本类文件时只在文件夹中显示，不直接运行；文件名里能伪装扩展名的不可见字符会被去掉 |
-| 共享范围过大 | 不允许把用户文件夹本身、它的上级、系统资料库或 LanShare 自己的数据目录设为共享文件夹；数据目录即使在共享范围内也拒绝访问 |
-| 用空连接拖垮服务 | TLS 握手前先丢弃非局域网连接；每个 IP 最多 32 个、总共最多 256 个并发连接；请求头读取超时；提高可打开文件数上限 |
-| 证书私钥泄露 | 根证书私钥只存在电脑本地，只有当前用户能读，永远不会传出去。根证书带「名称约束」，只能给局域网地址签发证书，即使泄露也无法冒充外部网站。设置里可以一键重置 |
-| 隐私 | 没有账号、没有服务器、不上报任何数据；日志里不记录消息内容；聊天记录只存在本机，可以清空，也可以设成定期自动清理 |
-| 临时不想被访问 | 一键「暂停共享」，立即拒绝所有来自局域网的请求 |
+| Eavesdropping | HTTPS everywhere (TLS 1.2 / 1.3); no unencrypted endpoint is offered on the LAN |
+| Someone impersonates the computer (man-in-the-middle) | We recommend installing the root certificate generated by the computer on the iPhone and **checking the certificate fingerprint** before installing (the SHA-256 shown on the computer screen must match the one in the profile details on the iPhone). Once a checked certificate is installed, Safari validates strictly and an impostor cannot get through. If you install without checking, the first certificate download can still be spoofed; without the certificate, protection relies only on the network itself being trustworthy |
+| Unauthorized access | Pairing requires manual approval on the computer and a confirmation code check; after that, a 256-bit random credential is used (the computer stores only its hash), and it can be revoked at any time |
+| Brute-forcing the code | The QR code token is single-use and expires after 2 minutes; the 6-digit pairing code is rate-limited (5 attempts per IP per minute; the code is invalidated after 10 failures in total) |
+| Reading files outside the shared folder | All paths are confined to the shared folder: `..`, absolute paths, symlinks that point outside, hidden files, Windows reserved names (CON, NUL, etc.) and other special forms are rejected |
+| Cross-site request forgery | Cookies are set to SameSite=Strict; every write must carry a custom request header, and Origin is checked |
+| Web page injection (XSS) | Messages are always shown as plain text; a strict Content Security Policy (CSP) is enabled; HTML, SVG and similar files in the shared folder can only be downloaded or opened in a sandbox, and cannot run scripts in the app's pages |
+| A malicious web page reaches the local service indirectly (DNS rebinding) | The local service listens only on 127.0.0.1, checks the Host header, and requires the random token generated at startup |
+| Access from outside the LAN | Accept only private IPs (10.x, 172.16–31.x, 192.168.x, link-local addresses); no UPnP port mapping; the Windows firewall rule allows only "Private network" |
+| A received file is run as a program | Files from the phone get the "from the internet" quarantine flag on macOS (Zone.Identifier on Windows); when the desktop app opens a program or script file, it shows the file in its folder instead of running it; invisible characters in file names that can disguise the extension are removed |
+| Sharing too much | The user's home folder itself, its parent folders, the system Library folders and LanShare's own data directory cannot be set as the shared folder; access to the data directory is denied even when it falls inside the shared scope |
+| Idle connections exhaust the server | Drop non-LAN connections before the TLS handshake; at most 32 concurrent connections per IP and 256 in total; a read timeout for request headers; raise the open-file limit |
+| Certificate private key leak | The root certificate's private key exists only on the local computer, is readable only by the current user, and is never sent out. The root certificate has "name constraints", so it can only issue certificates for LAN addresses; even if leaked, it cannot impersonate outside websites. Settings has a one-click reset |
+| Privacy | No accounts, no servers, no data reporting; logs do not record message content; chat history is stored only on this computer and can be cleared, or set to clean up automatically on a schedule |
+| Temporarily blocking access | One-click **暂停共享** (Pause sharing) immediately rejects all requests from the LAN |
 
-### 7.3 证书方案
+### 7.3 Certificate scheme
 
-**首次启动时生成：**
+**Generated at first launch:**
 
-- 本机根证书（CA）：ECDSA P-256，有效期 10 年。带名称约束，只允许 `localhost`、`*.local` 和内网 IP 段
-  - 名称形如「LanShare Local CA (电脑名) 2DD31B」（电脑名在 macOS 上是「电脑名称」，其他系统是主机名），末尾 6 位是这个证书密钥标识符的开头，每次生成（包括重置）都不同，iPhone 上能分清新旧。旧版本生成的证书沿用原名，不重新生成
-- 服务器证书：由上面的根证书签发
-  - 证书里的地址包含 `localhost`、`<电脑名>.local` 和本机所有内网 IP。`.local` 名称在 macOS 上取 Bonjour 本地主机名（`scutil --get LocalHostName`），其他系统或取不到时用主机名
-  - 用途限定为服务器认证（serverAuth）
-  - 有效期 397 天，符合苹果对受信任证书的要求
-  - 到期前 30 天、IP 变化或者电脑改名时，自动重新签发并立即生效（不用重启）
+- Local root certificate (CA): ECDSA P-256, valid for 10 years. It has name constraints that allow only `localhost`, `*.local` and private IP ranges
+  - The name looks like "LanShare Local CA (computer name) 2DD31B" (on macOS the computer name is the "Computer Name" setting; on other systems it is the hostname). The last 6 characters are the start of this certificate's key identifier. They differ on every generation (resets included), so you can tell new from old on the iPhone. Certificates generated by older versions keep their original name and are not regenerated
+- Server certificate: issued by the root certificate above
+  - The addresses in the certificate include `localhost`, `<computer name>.local` and all of this computer's private IPs. On macOS the `.local` name comes from the Bonjour local hostname (`scutil --get LocalHostName`); on other systems, or when that is unavailable, the hostname is used
+  - Usage limited to server authentication (serverAuth)
+  - Valid for 397 days, which meets Apple's requirements for trusted certificates
+  - Reissued automatically 30 days before expiry, when the IP changes, or when the computer is renamed, and takes effect immediately (no restart needed)
 
-**iPhone 有两种用法：**
+**The iPhone has two options:**
 
-1. 快速：第一次访问时点过警告（3 步）
-2. 推荐：配对后点「安装证书」，下载描述文件；安装前在描述文件的「更多详细信息」里核对 SHA-256 与电脑上显示的一致，再安装并在 通用 › 关于本机 › 证书信任设置 打开完全信任。以后不会再有警告，也能真正防住中间人
+1. Quick: tap through the warning on the first visit (3 steps)
+2. Recommended: after pairing, tap **安装证书** (Install certificate) to download the profile; before installing, check in the profile's "More Details" that the SHA-256 matches the one shown on the computer, then install it and turn on full trust in General › About › Certificate Trust Settings. After that, there are no more warnings, and man-in-the-middle attacks are actually blocked
 
-## 8. 接口设计（草案）
+## 8. API design (draft)
 
-所有接口都以 `/api` 开头，使用 JSON；写操作必须带 `X-LanShare: 1` 请求头。
+All endpoints start with `/api` and use JSON; write requests must carry the `X-LanShare: 1` request header.
 
-| 方法 | 路径 | 说明 | 权限 |
+| Method | Path | Description | Access |
 |---|---|---|---|
-| POST | /pair/request | 用令牌或 6 位码发起配对，返回 request_id 和确认码 | 公开（限速） |
-| GET | /pair/status/{id} | 轮询配对结果，批准后下发 Cookie | 公开 |
-| GET | /ca | 当前根证书的名称（安装引导里显示，告诉用户该打开哪个开关） | 公开 |
-| GET | /ca.crt | 下载根证书（公开信息） | 公开 |
-| GET | /me | 当前身份 | 已配对 |
-| GET | /events | SSE 实时事件 | 已配对 |
-| GET / POST | /messages | 拉历史（按 before / after 分页）/ 发文字 | 已配对 |
-| POST | /messages/upload | 发文件消息（请求体就是文件流） | 已配对 |
-| GET | /messages/{id}/file | 下载或预览消息附件（支持 Range） | 已配对 |
-| GET | /files?path= | 列出目录 | 已配对 |
-| GET | /files/download?path=&inline= | 下载或预览文件（支持 Range） | 已配对 |
-| POST | /files/upload?dir=&name= | 上传（边收边写入临时文件，完成后改成正式文件名） | 读写 |
-| POST | /files/mkdir、/files/rename、/files/delete | 新建文件夹 / 重命名 / 删除到回收站 | 读写 |
-| * | /host/... | 配对二维码、审批、设备管理、设置、打开文件 / 文件夹 / 链接 | 仅主机 |
+| POST | /pair/request | Start pairing with the token or the 6-digit code; returns request_id and the confirmation code | Public (rate-limited) |
+| GET | /pair/status/{id} | Poll the pairing result; sets the cookie once approved | Public |
+| GET | /ca | Name of the current root certificate (shown in the install guide, so the user knows which switch to turn on) | Public |
+| GET | /ca.crt | Download the root certificate (public information) | Public |
+| GET | /me | Current identity | Paired |
+| GET | /events | SSE real-time events | Paired |
+| GET / POST | /messages | Fetch history (paged by before / after) / send text | Paired |
+| POST | /messages/upload | Send a file message (the request body is the file stream) | Paired |
+| GET | /messages/{id}/file | Download or preview a message attachment (supports Range) | Paired |
+| GET | /files?path= | List a directory | Paired |
+| GET | /files/download?path=&inline= | Download or preview a file (supports Range) | Paired |
+| POST | /files/upload?dir=&name= | Upload (written to a temp file as it arrives, renamed to the final name when complete) | Read-write |
+| POST | /files/mkdir, /files/rename, /files/delete | New folder / rename / delete to the Trash / Recycle Bin | Read-write |
+| * | /host/... | Pairing QR code, approval, device management, settings, opening files / folders / links | Host only |
 
-SSE 事件：
+SSE events:
 
-| 事件 | 含义 |
+| Event | Meaning |
 |---|---|
-| `msg` | 新消息 |
-| `files` | 某个目录有变化 |
-| `devices` | 设备列表或在线状态变化 |
-| `pairing` | 有新的配对请求（仅主机收到） |
-| `revoked` | 当前设备被移除 |
-| `paused` | 电脑端暂停了共享 |
-| `resync` | 推送有遗漏，客户端需要重新拉取数据 |
+| `msg` | New message |
+| `files` | A directory changed |
+| `devices` | Device list or online status changed |
+| `pairing` | New pairing request (sent to the host only) |
+| `revoked` | The current device was removed |
+| `paused` | The computer paused sharing |
+| `resync` | Some pushes were missed; the client must fetch the data again |
 
-## 9. 数据与存储
+## 9. Data and storage
 
-- 应用数据目录（macOS 在 `~/Library/Application Support/<id>/`，Windows 在 `%APPDATA%\<id>\`）里有：
-  - `lanshare.db`（SQLite 数据库）
-  - `config.json`（共享文件夹路径、端口）
-  - `tls/`（证书和私钥）
-- 数据表：
-  - `devices`：id、名称、凭证哈希、读写权限、创建时间、最后活动时间
-  - `messages`：id、所属对话（设备）、方向（电脑发出 / 设备发出）、client_id（去重用）、类型、文本、附件的相对路径 / 文件名 / 大小 / 类型、时间
-- 文件本身只存在共享文件夹里，消息只记录它的相对路径
+- The app data directory (`~/Library/Application Support/<id>/` on macOS, `%APPDATA%\<id>\` on Windows) contains:
+  - `lanshare.db` (SQLite database)
+  - `config.json` (shared folder path, port)
+  - `tls/` (certificates and private keys)
+- Tables:
+  - `devices`: id, name, credential hash, read/write permission, created time, last activity time
+  - `messages`: id, conversation (device), direction (sent by the computer / sent by the device), client_id (for deduplication), type, text, attachment relative path / file name / size / type, time
+- Files themselves live only in the shared folder; a message records only the file's relative path
 
-## 10. 项目结构（计划）
+## 10. Project structure (planned)
 
 ```
 NetworkFileShare/
-├─ PLAN.md、README.md
-├─ package.json、vite.config.ts、index.html
-├─ src/                    # 网页界面（电脑窗口和 iPhone 共用）
-│  ├─ app/                 # 启动、路由、主机 / 设备两种布局
-│  ├─ chat/                # 消息模块
-│  ├─ files/               # 文件模块
-│  ├─ devices/、settings/、pair/
-│  └─ lib/                 # 接口封装、SSE、复制、格式化
+├─ PLAN.md, README.md
+├─ package.json, vite.config.ts, index.html
+├─ src/                    # web UI (shared by the desktop window and the iPhone)
+│  ├─ app/                 # startup, routing, host / device layouts
+│  ├─ chat/                # messages module
+│  ├─ files/               # files module
+│  ├─ devices/, settings/, pair/
+│  └─ lib/                 # API wrappers, SSE, copy, formatting
 ├─ src-tauri/
 │  ├─ src/
-│  │  ├─ lib.rs            # Tauri 窗口、托盘、通知
-│  │  ├─ server/           # 路由、鉴权、配对、消息、文件、SSE
-│  │  └─ tls.rs、db.rs、paths.rs、net.rs
-│  ├─ examples/headless.rs # 不开窗口、单独运行服务（测试用）
-│  └─ tests/               # 接口集成测试
-└─ .github/workflows/      # CI：测试 + Windows / macOS 打包
+│  │  ├─ lib.rs            # Tauri window, tray, notifications
+│  │  ├─ server/           # routing, auth, pairing, messages, files, SSE
+│  │  └─ tls.rs, db.rs, paths.rs, net.rs
+│  ├─ examples/headless.rs # runs the server alone, without a window (for testing)
+│  └─ tests/               # API integration tests
+└─ .github/workflows/      # CI: tests + Windows / macOS packaging
 ```
 
-## 11. 原生 iOS App 与澳洲开发者账号（远期）
+## 11. Native iOS app and an Australian developer account (long term)
 
-| 方式 | 结论 |
+| Option | Verdict |
 |---|---|
-| 免费 Apple 账号 | 能装，但不适合日常用：装上的 App **7 天后失效**；最多登记 3 台设备，每台最多 3 个 App；需要定期用 Xcode 重装。可以用来先试做原型 |
-| 付费开发者账号（澳洲） | **可行**。年费 99 美元，按当地货币收取（有用户报告澳洲价格是 A$149，以注册页面显示为准） |
+| Free Apple account | Can install apps, but not fit for daily use: installed apps **stop working after 7 days**; at most 3 registered devices, at most 3 apps per device; you must reinstall with Xcode regularly. Good for trying out a prototype first |
+| Paid developer account (Australia) | **Feasible**. The annual fee is US$99, charged in local currency (some users report the Australian price as A$149; the price shown on the enrollment page is what counts) |
 
-**注册要求（Apple 官方）：**
+**Enrollment requirements (from Apple):**
 
-- Apple 账号要开启双重认证，姓名、地址、电话等资料真实有效
-- 个人身份注册要用**真实法定姓名**，这个名字会显示为 App Store 上的卖家名称
-- 通过 Apple Developer App 注册时要拍证件照片（大多数地区接受护照，部分地区也接受驾照），整个注册过程要在同一台设备上完成
-- 不能用 Apple 礼品卡余额付款，要用当地能用的付款方式
-- 账号的地区跟着注册人的真实身份和地址走。如果用的是亲友的账号，应该由持有人本人注册，再为你的 iPhone 签名
+- The Apple Account must have two-factor authentication turned on, and the name, address, phone number and other details must be real and valid
+- Enrolling as an individual requires your **real legal name**. This name is shown as the seller name on the App Store
+- Enrolling through the Apple Developer app requires taking a photo of your ID (most regions accept a passport, some also accept a driver's license), and the whole enrollment must be done on the same device
+- You cannot pay with an Apple Gift Card balance. You must use a payment method that works locally
+- The account's region follows the enrollee's real identity and address. If you use a relative's or friend's account, the account holder should enroll themselves and then sign the app for your iPhone
 
-**付费账号能带来什么：**
+**What a paid account gives you:**
 
-- 签名一年有效，可以直接用 Xcode 装到自己的 iPhone 上，也可以走 TestFlight
-- 用 Xcode 直接安装时，是按设备授权的，你 iPhone 的 Apple ID 属于哪个地区不影响安装
-- 顺带：macOS 版也能做开发者签名和公证，别人下载后不会被系统拦截
-- 只自用、不上架的话，不涉及上架中国区需要的 ICP 备案
+- Signing is valid for one year. You can install directly to your own iPhone with Xcode, or go through TestFlight
+- Installing directly with Xcode is authorized per device, so the region of your iPhone's Apple ID does not affect installation
+- Side benefit: the macOS version can also get developer signing and notarization, so the system does not block it when other people download it
+- If the app is only for personal use and not published on the App Store, the ICP filing required to publish in the China region does not apply
 
-**以后怎么做：** 服务端接口不用改，客户端二选一：
+**How to do it later:** The server API does not change. For the client, pick one of two options:
 
-1. 用 Tauri 2 把同一套网页界面直接打包成 iOS App（改动最小）
-2. 用 SwiftUI 写原生 App（体验最好：系统分享菜单一键发到电脑、后台传输、通过 Bonjour 自动找到电脑）
+1. Use Tauri 2 to package the same web UI directly as an iOS app (smallest change)
+2. Write a native app in SwiftUI (best experience: one tap in the system share sheet sends to the computer, background transfers, finding the computer automatically through Bonjour)
 
-原生 App 也有限制：iPhone 在后台时收不到实时消息，因为没有走互联网的推送。iOS 有个 Local Push Connectivity 功能，可以在指定的 Wi-Fi 下做本地推送，但配置复杂，到时再评估。
+A native app has limits too: the iPhone cannot receive real-time messages while in the background, because there is no push over the internet. iOS has a Local Push Connectivity feature that can do local push on specified Wi-Fi networks, but it is complex to configure. Evaluate it when the time comes.
 
-## 12. 开发里程碑
+## 12. Development milestones
 
-每个里程碑都有能验收的结果，做完一个再开始下一个。
+Each milestone has a result that can be verified in acceptance testing. Finish one before starting the next.
 
-**M0 环境与真机确认**
+**M0 Environment and real-device check**
 
-- 安装 Rust，生成项目骨架
-- 用真机 iPhone 打开测试页（约 5 分钟）：证书警告、复制、实时推送、上传照片的格式
-- 在本地项目文件夹初始化 Git（GitHub 仓库等你建好后再关联，见 M6）
-- 验收：真机测试页各项都通过
+- Install Rust, generate the project skeleton
+- Open a test page on a real iPhone (about 5 minutes): certificate warning, copy, real-time push, format of uploaded photos
+- Initialize Git in the local project folder (link the GitHub repository once you have created it; see M6)
+- Acceptance: every item on the test page passes on a real device
 
-**M1 服务端核心**
+**M1 Server core**
 
-- 证书生成和热更新、两个服务的监听、内网 IP 过滤
-- 配对（二维码 + 6 位码 + 确认码）、Cookie 鉴权、SSE、设备管理接口
-- Rust 单元测试：路径限制、文件名清洗、凭证校验、配对流程的各种状态、限速
-- 验收：用命令行走完整个配对流程；没配对的请求一律返回 401；Origin 不对的请求被拒绝
+- Certificate generation and hot reload, listeners for both servers, private IP filtering
+- Pairing (QR code + 6-digit code + confirmation code), cookie auth, SSE, device management API
+- Rust unit tests: path restrictions, filename sanitization, credential checks, every state of the pairing flow, rate limiting
+- Acceptance: complete the whole pairing flow from the command line; every request from an unpaired device returns 401; requests with a wrong Origin are rejected
 
-**M2 消息模块**
+**M2 Messages module**
 
-- 消息接口，以及电脑端和 iPhone 两种布局的聊天界面
-- 复制按钮、失败重发、断线后补齐消息、文件消息
-- 验收：电脑窗口和 iPhone 模拟器之间互发文字、图片、文件；复制按钮的内容确实写进了剪贴板；断网再重连后消息不丢
+- Messages API, and the chat UI in two layouts: desktop and iPhone
+- Copy button, resend on failure, catching up on missed messages after a disconnect, file messages
+- Acceptance: send text, images and files both ways between the desktop window and the iPhone Simulator; the copy button really writes its content to the clipboard; no messages are lost after the network drops and reconnects
 
-**M3 文件模块**
+**M3 Files module**
 
-- 浏览、预览、下载（支持 Range）、上传（边收边写 + 进度）
-- 新建、重命名、删除到回收站、读写 / 只读权限、实时刷新
-- 验收：iPhone 上传一个 1GB 视频后，电脑能正常打开；视频能拖动进度条播放；各种路径越界的写法全部被拒绝
+- Browse, preview, download (with Range), upload (written to disk while receiving + progress)
+- New folder, rename, delete to the Trash / Recycle Bin, read-write / read-only permissions, live refresh
+- Acceptance: after the iPhone uploads a 1GB video, the computer opens it normally; the video plays with a draggable progress bar; every path-escape variant is rejected
 
-**M4 macOS 桌面端**
+**M4 macOS desktop app**
 
-- Tauri 窗口、设备页、二维码、配对弹窗、设置页
-- 系统通知、关窗后台运行、菜单栏图标、打包 .app / .dmg
-- 验收：在你的 Mac 上安装运行，真机 iPhone 扫码配对，并完成消息和文件的收发
+- Tauri window, Devices page, QR code, pairing dialog, Settings page
+- System notifications, keep running in the background after the window closes, menu bar icon, package .app / .dmg
+- Acceptance: install and run on your Mac, pair a real iPhone by scanning the QR code, and send and receive messages and files
 
-**M5 iPhone 体验打磨**
+**M5 iPhone experience polish**
 
-- 证书安装引导、添加到主屏幕、键盘和安全区适配
-- 存储到相册、HEIC 和视频上传的处理
-- 验收：真机完整走完「首次扫码 → 安装证书 → 日常使用」
-- 状态：✅ 已完成（结果见 4.1.1）。顺带修复：共享文件夹被删除后会在原位置重建（之前会退回 `~/LanShare`）；`headless` 示例的相对路径按当前目录解析。电脑端 debug 日志会记录手机的页面请求（不含 `/api/`）和 TLS 握手失败，便于排查连接问题
+- Certificate install guide, Add to Home Screen, keyboard and safe area handling
+- Saving to Photos, handling HEIC and video uploads
+- Acceptance: go through the whole flow on a real device: "first scan → install certificate → daily use"
+- Status: ✅ Done (see 4.1.1 for results). Also fixed: if the shared folder is deleted, it is recreated in its original location (it used to fall back to `~/LanShare`); relative paths in the `headless` example resolve against the current directory. The desktop app's debug log records the phone's page requests (excluding `/api/`) and TLS handshake failures, to help troubleshoot connection problems
 
-**M6 Windows 版**
+**M6 Windows version**
 
-- 前提：你建好 GitHub 仓库并把地址给我之后再开始（在此之前先把 Mac 版做完）
-- Windows 适配：路径规则、回收站、防火墙提示、托盘、只允许运行一个实例
-- 进度（2026-10-15）：代码已推到 GitHub（DEFY-AN94/LanShare），在 `windows-m6` 分支上完成下面几项，等 CI 在 Windows 上验证：
-  - 安装包（NSIS，装到 Program Files）自动添加防火墙规则：只放行专用网络、本地子网
-  - 运行时检测 Windows「公用网络」，在设置页和添加设备窗口提示改成专用网络
-  - 删除前检查磁盘类型，U 盘 / 网络共享上拒绝删除（没有回收站）；回收站操作放在独立线程，避免 COM 初始化冲突
-  - VPN 网卡（点对点链路、常见 VPN 名称）不再出现在二维码地址里
-  - CI：Windows 上跑 clippy、全部 Rust 测试和接口端到端测试，并打包 Windows 安装包（macOS 测试只在 PR 时跑）
-- 审查遗留（需要在 Windows 上编译和实测）：
-  - 安装包添加防火墙规则（只放行专用网络）；运行时检测「公用网络」并在设置页/添加设备窗口提示
-  - 删除前检查所在磁盘有没有回收站（U 盘、网络共享没有），没有就拒绝，避免弹出永久删除确认框
-  - VPN 网卡排序：避免全局 VPN 的 10.x 地址排在二维码第一位
-  - 用 CI 编译验证所有 `cfg(windows)` 代码（隐藏属性、Zone.Identifier、长路径、UNC 路径）
-- GitHub Actions：每次推送都在 macOS 和 Windows 上跑测试，并把 .msi / .exe 打包成构建产物
-- 在 Mac 的 Windows 11 ARM 虚拟机里安装测试
-- 验收：Actions 产出安装包；在虚拟机里装好后，能和 iPhone（模拟器）完成配对和收发
+- Prerequisite: start only after you create the GitHub repository and give me its URL (finish the Mac version before that)
+- Windows adaptation: path rules, Recycle Bin, firewall prompt, tray, allow only one running instance
+- Progress (2026-10-15): the code is pushed to GitHub (DEFY-AN94/LanShare). The items below are done on the `windows-m6` branch and are waiting for CI to verify them on Windows:
+  - The installer (NSIS, installs to Program Files) adds a firewall rule automatically: it allows only Private networks and the local subnet
+  - At runtime, detect when Windows is set to "Public network", and prompt on the Settings page and in the Add device window to switch it to a Private network
+  - Before deleting, check the drive type, and refuse to delete on USB drives / network shares (they have no Recycle Bin); run Recycle Bin operations on a separate thread to avoid COM initialization conflicts
+  - VPN adapters (point-to-point links, common VPN names) no longer appear in the QR code address
+  - CI: on Windows, run clippy, all Rust tests and the API end-to-end tests, and build the Windows installer (macOS tests run only on PRs)
+- Open items from review (need compiling and hands-on testing on Windows):
+  - The installer adds a firewall rule (allows only Private networks); runtime detection of "Public network" with a prompt on the Settings page / Add device window
+  - Before deleting, check whether the drive has a Recycle Bin (USB drives and network shares do not); if not, refuse, to avoid the permanent-delete confirmation dialog
+  - VPN adapter ordering: keep a full-tunnel VPN's 10.x address from coming first in the QR code
+  - Compile all `cfg(windows)` code in CI to verify it (hidden attribute, Zone.Identifier, long paths, UNC paths)
+- GitHub Actions: on every push, run tests on macOS and Windows, and package .msi / .exe as build artifacts
+- Install and test in a Windows 11 ARM virtual machine on the Mac
+- Acceptance: Actions produces the installers; after installing in the VM, it can complete pairing and transfers with the iPhone (Simulator)
 
-**M7 增强（按需挑选）**
+**M7 Enhancements (pick as needed)**
 
-- 大文件断点续传、图片缩略图、多选后打包下载
-- 支持用 `电脑名.local` 访问，IP 变了也能连（服务器证书已包含 Bonjour 名称，如 `mymac.local`）
-- 电脑之间互联（Mac ↔ Windows）
-- 电脑端全局快捷键「把剪贴板发到手机」
-- 聊天记录自动清理、开机自启
+- Resumable transfers for large files, image thumbnails, multi-select and download as an archive
+- Access through `computer-name.local`, so it still connects after the IP changes (the server certificate already includes the Bonjour name, e.g. `mymac.local`)
+- Computer-to-computer connections (Mac ↔ Windows)
+- A global shortcut in the desktop app: "send clipboard to phone"
+- Automatic chat history cleanup, launch at login
 
-**远期**：原生 iOS App（见第 11 节）
+**Long term**: native iOS app (see section 11)
 
-## 13. 测试计划
+## 13. Test plan
 
-- **自动测试**（CI 上 macOS 和 Windows 都跑）：
-  - Rust 单元测试
-  - 接口集成测试：在临时目录里启动真实服务，覆盖配对、鉴权、消息、文件、Range 和各种出错的情况
-  - 前端类型检查
-- **iOS 模拟器**（我能在这台 Mac 上直接跑）：每个里程碑结束时，把 iPhone 网页的流程走一遍并截图核对
-- **真机 iPhone**（需要你配合）：M0、M4、M5 各一次
-- **Windows 虚拟机**：M6
-- **安全自查清单**：
-  - 不带 Cookie 访问
-  - 伪造 Origin
-  - 各种路径越界写法
-  - 预览 HTML 文件
-  - 暴力尝试配对码
-  - 来自外网 IP 的请求（用单元测试模拟）
+- **Automated tests** (run in CI on both macOS and Windows):
+  - Rust unit tests
+  - API integration tests: start a real server in a temporary directory; cover pairing, auth, messages, files, Range and all kinds of error cases
+  - Frontend type checking
+- **iOS Simulator** (I can run it directly on this Mac): at the end of each milestone, walk through the iPhone web flows and take screenshots to check them
+- **Real iPhone** (needs your help): once each at M0, M4 and M5
+- **Windows virtual machine**: M6
+- **Security self-review checklist**:
+  - Access without a cookie
+  - Forged Origin
+  - All kinds of path-escape variants
+  - Previewing HTML files
+  - Brute-forcing the pairing code
+  - Requests from internet IPs (simulated in unit tests)
 
-## 14. 风险与对策
+## 14. Risks and mitigations
 
-| 风险 | 影响 | 对策 |
+| Risk | Impact | Mitigation |
 |---|---|---|
-| iPhone 第一次访问有证书警告 | 体验 | 引导安装证书（已验证能彻底消除警告） |
-| iPhone 切到后台或锁屏后连接断开 | 消息延迟；大文件上传中断 | SSE 自动重连并补拉；上传时提示保持页面打开；M7 做断点续传 |
-| 上传照片被转码（HEIC → JPEG） | 拿到的不是原图 | 已真机确认无法用网页避免；第一次上传时提示用「文件」App 传原片（见 4.1.1） |
-| 电脑 IP 变化 | 主屏幕上的书签失效 | 证书自动重签；重新扫码即可；M7 支持 `.local` 主机名 |
-| 没有 Windows 真机 | Windows 上的问题发现得晚 | CI 自动测试 + 虚拟机测试；以后有 Windows 电脑再实机确认 |
-| 网络环境（AP 隔离、访客网络、VPN、Windows 设成「公用网络」） | 连不上 | 设置页给出排查提示；文档里说明 |
-| 端口被占用 | 二维码里的地址会变 | 自动顺延端口，并在设置页显示实际端口 |
-| 两个平台的 WebView 不一样（macOS 是 WKWebView，Windows 是 WebView2） | 界面兼容问题 | 两个平台都测；只用标准的网页能力 |
+| Certificate warning on the iPhone's first visit | User experience | Guide the user to install the certificate (verified to remove the warning completely) |
+| Connection drops after the iPhone goes to the background or locks | Delayed messages; large file uploads interrupted | SSE reconnects automatically and fetches what was missed; tell the user to keep the page open during uploads; resumable transfers in M7 |
+| Uploaded photos are transcoded (HEIC → JPEG) | You do not get the original | Confirmed on a real device that a web page cannot avoid this; on the first upload, suggest sending originals through the Files app (see 4.1.1) |
+| The computer's IP changes | The Home Screen bookmark stops working | The certificate is re-signed automatically; just scan the QR code again; M7 supports the `.local` hostname |
+| No real Windows device | Windows problems are found late | CI automated tests + virtual machine tests; confirm on real hardware once a Windows PC is available |
+| Network environment (AP isolation, guest networks, VPN, Windows set to "Public network") | Cannot connect | The Settings page gives troubleshooting tips; explained in the docs |
+| Port already in use | The address in the QR code changes | Move to the next port automatically, and show the actual port on the Settings page |
+| The two platforms use different WebViews (WKWebView on macOS, WebView2 on Windows) | UI compatibility problems | Test on both platforms; use only standard web features |
 
-## 15. 需要你准备或确认的事
+## 15. Things you need to prepare or confirm
 
-1. **GitHub**：需要一个 GitHub 账号和一个私有仓库（M6 之前给我就行，用来打包 Windows 版）
-2. **Windows 测试**：能不能接受在 Mac 上装 Windows 11 ARM 虚拟机（UTM 免费），还是等以后有了 Windows 电脑再测
-3. **真机配合**：M0、M4、M5 时，iPhone 和 Mac 连同一个 Wi-Fi，配合测几分钟
-4. **名称**：工作名「LanShare」行不行；共享文件夹默认放在 `~/LanShare` 行不行
+1. **GitHub**: a GitHub account and a private repository (any time before M6 is fine; needed to build the Windows version)
+2. **Windows testing**: is it OK to install a Windows 11 ARM virtual machine on the Mac (UTM, free), or should testing wait until you have a Windows PC?
+3. **Real-device help**: at M0, M4 and M5, connect the iPhone and the Mac to the same Wi-Fi and help test for a few minutes
+4. **Name**: is the working name "LanShare" OK? Is `~/LanShare` OK as the default shared folder location?
 
-## 参考资料
+## References
 
-- Apple 会员对比（免费账号限制）：https://developer.apple.com/support/compare-memberships/
-- Apple Developer App 注册要求：https://developer.apple.com/support/app-account/
-- Apple 开发者注册说明（年费按当地货币收取）：https://developer.apple.com/support/enrollment/
-- 澳洲用户关于付款金额的帖子：https://developer.apple.com/forums/thread/775152
-- GitHub Actions 计费：https://docs.github.com/en/billing/concepts/product-billing/github-actions
-- tauri-action：https://github.com/tauri-apps/tauri-action
-- Tauri v2 的 GitHub 打包指南：https://v2.tauri.app/distribute/pipelines/github
-- Safari 自签证书下 WebSocket 的问题：https://bugs.webkit.org/show_bug.cgi?id=158345 、https://developer.apple.com/forums/thread/792842 、https://cockpit-project.org/running/safari
+- Apple membership comparison (free account limits): https://developer.apple.com/support/compare-memberships/
+- Apple Developer app enrollment requirements: https://developer.apple.com/support/app-account/
+- Apple Developer enrollment details (annual fee charged in local currency): https://developer.apple.com/support/enrollment/
+- Forum thread from an Australian user about the amount charged: https://developer.apple.com/forums/thread/775152
+- GitHub Actions billing: https://docs.github.com/en/billing/concepts/product-billing/github-actions
+- tauri-action: https://github.com/tauri-apps/tauri-action
+- Tauri v2 guide to building on GitHub: https://v2.tauri.app/distribute/pipelines/github
+- WebSocket problems in Safari with self-signed certificates: https://bugs.webkit.org/show_bug.cgi?id=158345, https://developer.apple.com/forums/thread/792842, https://cockpit-project.org/running/safari
