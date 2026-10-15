@@ -1,84 +1,102 @@
 # LanShare
 
-局域网内 iPhone ↔ 电脑的消息与文件传输工具，只走局域网，不经过任何云端。完整设计见 [PLAN.md](PLAN.md)。
+<p>
+  <a href="README.md"><img alt="English" src="https://img.shields.io/badge/English-0969da?style=for-the-badge"></a>
+  <a href="README.zh-CN.md"><img alt="简体中文" src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-6e7781?style=for-the-badge"></a>
+</p>
 
-- **消息**：类 iMessage 聊天，每条消息旁有快速复制按钮；可直接发图片和文件
-- **文件**：iPhone 浏览电脑上的共享文件夹（默认 `~/LanShare`），上传、下载、预览、重命名、删除（进回收站）
-- **iPhone 不用装 App**：Safari 扫码打开即可，可以添加到主屏幕
-- **安全**：全程 HTTPS；扫码配对需要电脑端确认；只接受局域网连接；访问范围限制在共享文件夹内
+Send messages and files between an iPhone and a computer over your local network. Everything stays on the LAN and nothing goes through the cloud. The full design is in [PLAN.md](PLAN.md).
 
-当前进度：Mac 版已完成；Windows 版由 GitHub Actions 编译、测试并打包（PLAN.md 里程碑 M6）。
+- **Messages**: an iMessage-style chat with a quick copy button next to every text message. Photos and files can be sent straight from the chat.
+- **Files**: the iPhone browses a shared folder on the computer (`~/LanShare` by default) and can upload, download, preview, rename and delete (deleted files go to the Trash or Recycle Bin).
+- **No iPhone app to install**: scan a QR code to open LanShare in Safari, and add it to the Home Screen if you like.
+- **Secure**: all network traffic is HTTPS; every pairing must be approved on the computer; only connections from the local network are accepted; phones can only reach the shared folder.
 
-## 使用
+Status: the Mac version is done. The Windows version is built, tested and packaged by GitHub Actions (milestone M6 in PLAN.md).
 
-1. 打开 LanShare。第一次运行时 macOS 可能会问「是否允许 LanShare 接受传入的网络连接」，要点**允许**，否则手机连不上。
-2. 在电脑端点「添加设备」，用 iPhone 相机扫二维码（iPhone 和电脑要连同一个 Wi-Fi）。
-3. Safari 提示「此连接不是私密连接」时，点 显示详细信息 › 访问此网站。想彻底去掉这个提示，配对后按页面引导安装电脑的证书（推荐），安装前核对证书指纹和电脑上显示的一致。
-4. 在 iPhone 上点「请求连接」，核对两边的确认码一致后，在电脑上点「允许」。
-5. 在 Safari 里点分享 › 添加到主屏幕，以后一点就开。以前添加的图标如果是灰色字母，删掉后重新添加即可。
+> LanShare's interface is currently in Simplified Chinese only. Its button and folder names below are given in Chinese with an English translation; iOS, macOS and Windows controls use their English names.
 
-从 iPhone 的「照片图库」上传时，iOS 会自动把 HEIC 照片转成 JPEG、HEVC 视频转成 H.264（分辨率不变）。需要原片时，先在「照片」App 里分享 › 存储到「文件」，再在 LanShare 里选「选取文件」。第一次上传时页面会提示一次。
+## Getting started
 
-关掉窗口后 LanShare 会继续在后台运行（菜单栏图标 / Dock），可以从菜单栏图标里暂停共享或退出。
+1. Open LanShare. On first launch macOS may ask whether LanShare can accept incoming network connections. Click **Allow**, or the iPhone will not be able to connect.
+2. On the computer, click **添加设备** (Add device) and scan the QR code with the iPhone's Camera app. The iPhone and the computer must be on the same Wi-Fi network.
+3. When Safari says "This Connection Is Not Private", tap Show Details › visit this website. To get rid of this warning for good, install the computer's certificate after pairing by following the steps on the page (recommended). Before installing it, check that the certificate fingerprint matches the one shown on the computer.
+4. On the iPhone, tap **请求连接** (Request connection). Check that the confirmation code is the same on both screens, then click **允许** (Allow) on the computer.
+5. In Safari, tap Share › Add to Home Screen so LanShare opens with one tap next time. If an icon you added earlier shows a gray letter, delete it and add it again.
 
-## Windows 版
+When you upload from **Photo Library** on the iPhone, iOS converts HEIC photos to JPEG and HEVC videos to H.264 (the resolution stays the same). To send the originals, first save them to Files from the Photos app (Share › Save to Files), then pick **Choose File** in LanShare. The page points this out once, on your first upload.
 
-GitHub Actions（`.github/workflows/ci.yml`）在 Windows 上跑全部测试，并把安装包作为构建产物上传：打开仓库的 Actions › 最新一次运行 › Artifacts › `LanShare-windows-x64` 下载。
+Closing the window keeps LanShare running in the background: in the menu bar and Dock on macOS, and in the notification area (system tray) on Windows. The menu bar or tray icon's menu has **打开 LanShare** (Open LanShare), **暂停共享** (Pause sharing) and **退出 LanShare** (Quit LanShare).
 
-- 安装包需要管理员权限（装到「Program Files」），安装时会自动添加防火墙规则：只允许同一子网的设备、只在「专用网络」下访问 LanShare
-- 如果 Windows 把当前 Wi-Fi 设成了「公用网络」，手机连不上，LanShare 的设置页和添加设备窗口会提示改成「专用网络」
-- 安装包没有代码签名，首次运行 SmartScreen 会拦截：点「更多信息 › 仍要运行」
-- 共享文件夹在 U 盘或网络共享上时，手机端不能删除文件（那里没有回收站，避免永久删除）
+## Windows
 
-## 开发
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs every test on Windows and uploads the installer as a build artifact. To download it, open the repository's **Actions** tab › the latest successful run › **Artifacts** › `LanShare-windows-x64`, then unzip it to get the `.exe` installer. You need to be signed in to GitHub with access to this repository, and artifacts are kept for 90 days.
 
-需要：Xcode 命令行工具、Rust（`brew install rust`）、Node.js 22+。
+- Installation requires administrator rights (LanShare installs to Program Files). The installer adds a firewall rule that lets only devices on the same subnet reach LanShare, and only on networks set to Private. Uninstalling removes the rule.
+- If Windows has marked the current Wi-Fi as a Public network, the phone cannot connect. LanShare's settings page and the **添加设备** (Add device) window show a warning asking you to switch the network to Private.
+- The installer is not code-signed, so SmartScreen blocks it the first time. Click **More info › Run anyway**.
+- When the shared folder is on a USB flash drive or a network share, LanShare refuses to delete files there, from the phone and from its own window: those locations have no Recycle Bin, so a delete would be permanent. Delete them in File Explorer instead.
+
+## Development
+
+Requirements: Xcode Command Line Tools, Rust (`brew install rust`) and Node.js 22+.
 
 ```bash
 npm install
-npm run build          # 构建网页界面到 dist/（Rust 端从这里读取）
-npm run tauri dev      # 运行桌面版（调试）
-npx tauri build        # 打包 .app / .dmg，输出在 src-tauri/target/release/bundle/
+npm run build          # build the web UI into dist/ (the Rust side serves it from there)
+npm run tauri dev      # run the desktop app (debug build)
+npx tauri build        # package the .app / .dmg into src-tauri/target/release/bundle/
 ```
 
-不开窗口、只跑服务（数据放在 `.dev-data/`，不影响正式数据）：
+To run only the server, without a window (data goes in `.dev-data/`, separate from your real data):
 
 ```bash
 npm run headless -- --local-port 53299
 ```
 
-终端会打印手机访问地址和电脑端界面的登录地址。改了前端后重新 `npm run build` 并刷新页面即可，调试版服务直接从 `dist/` 读文件。
+The terminal prints the address for the phone and the login address for the desktop UI. After changing the frontend, run `npm run build` again and reload the page; the debug server reads files straight from `dist/`.
 
-### 测试
+### Tests
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml                       # Rust 单元测试
-PHONE_OVERRIDE=https://127.0.0.1:39210 scripts/api_smoke.sh .         # 接口端到端测试（需先运行 headless）
-npx tsc                                                               # 前端类型检查
+cargo test --manifest-path src-tauri/Cargo.toml   # Rust unit tests
+npx tsc                                           # frontend type check
 ```
 
-## 目录
+The end-to-end API test pairs a fake phone, so run it against a throwaway headless server. The script reads the server's login URL from `.dev-data/headless.log`, and the LAN port is 39210 unless it was taken (for example while LanShare itself is running), so read the port from the log too:
+
+```bash
+mkdir -p .dev-data
+npm run headless -- --data .dev-data/smoke --shared .dev-data/smoke-share --local-port 53299 > .dev-data/headless.log 2>&1 &
+# wait until the log shows "Press Ctrl+C" (the first build takes a while), then:
+PORT=$(grep -o 'listening on port [0-9]*' .dev-data/headless.log | grep -o '[0-9]*$')
+PHONE_OVERRIDE=https://127.0.0.1:$PORT scripts/api_smoke.sh .
+```
+
+## Project layout
 
 ```
-src/                网页界面（电脑窗口和 iPhone 共用）
+src/                web UI (shared by the desktop window and the iPhone)
   app/ chat/ files/ devices/ settings/ pair/ components/ lib/
 src-tauri/src/
-  lib.rs            桌面外壳：窗口、菜单栏图标、通知、选择文件夹
-  core/             服务端：证书、配对、鉴权、消息、文件、SSE、数据库
-src-tauri/examples/headless.rs   无窗口运行服务
-scripts/api_smoke.sh             接口端到端测试
+  lib.rs            desktop shell: window, tray icon, notifications, folder picker
+  core/             server: certificates, pairing, auth, messages, files, SSE, database
+src-tauri/examples/headless.rs   run the server without a window
+src-tauri/windows/hooks.nsh      Windows installer hooks (firewall rule)
+scripts/api_smoke.sh             end-to-end API test
+.github/workflows/ci.yml         CI: Windows tests and installer
 ```
 
-## 数据位置
+## Where data lives
 
-- 应用数据（数据库、证书、配置）：`~/Library/Application Support/com.lanshare.desktop/`
-- 共享文件夹：默认 `~/LanShare`，聊天里收到的文件在「收件箱」，发给手机的在「已发送」（这两个文件夹只在电脑上可见）
-- 局域网端口：默认 39210（被占用时自动换一个，并记住）
+- App data (database, certificates, config): `~/Library/Application Support/com.lanshare.desktop/` on macOS, `%APPDATA%\com.lanshare.desktop\` on Windows.
+- Shared folder: `~/LanShare` by default (`%USERPROFILE%\LanShare` on Windows). Files received in chat are saved to `收件箱` (Inbox) and files sent to the phone to `已发送` (Sent); these two folders are only visible on the computer.
+- LAN port: 39210 by default (if it is taken, LanShare picks another one and remembers it).
 
-## 已知限制
+## Known limitations
 
-- iPhone 切到后台或锁屏后连接会断开，重新打开时自动补齐消息；纯局域网下没有推送通知
-- 上传中途锁屏：实测 600 MB 视频锁屏后仍传完，但锁屏时间长了 iOS 可能会中断上传，目前还不支持断点续传
-- 公司、酒店、访客 Wi-Fi 常开启「AP 隔离」，设备之间无法互访
-- 电脑 IP 变化后，旧的主屏幕书签会失效，重新扫码即可
-- 应用未签名：在别的 Mac 上首次打开需要到「系统设置 › 隐私与安全性」里点「仍要打开」
+- The connection drops when LanShare goes to the background or the iPhone locks; missed messages are fetched automatically when you return to LanShare. There are no push notifications on a LAN-only setup.
+- Locking the iPhone during an upload: in testing, a 600 MB video still finished uploading with the screen locked, but iOS may stop an upload if the phone stays locked for a long time, and interrupted uploads cannot be resumed yet.
+- Company, hotel and guest Wi-Fi networks often have "AP isolation" turned on, which stops devices from reaching each other.
+- If the computer's IP address changes, old Home Screen icons stop working. Scan the QR code again.
+- The app is not signed. On another Mac, allow the first launch in System Settings › Privacy & Security by clicking **Open Anyway**.
