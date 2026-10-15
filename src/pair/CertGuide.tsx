@@ -1,7 +1,19 @@
+import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
+import { api } from "../lib/api";
 
 /** Step-by-step guide for trusting the computer's local CA on iPhone. */
 export function CertGuide({ compact }: { compact?: boolean }) {
+  // Each CA has its own name ("LanShare Local CA (Mac) 2DD31B"), so the guide
+  // can point at the right switch when older ones are still installed.
+  const [caName, setCaName] = useState<string | null>(null);
+  useEffect(() => {
+    api.get<{ name: string }>("/api/ca").then(
+      (r) => setCaName(r.name),
+      () => {},
+    );
+  }, []);
+
   return (
     <section className={`card cert-guide ${compact ? "compact" : ""}`}>
       <h3 className="card-title">
@@ -23,7 +35,8 @@ export function CertGuide({ compact }: { compact?: boolean }) {
           一致后点<b>安装</b>（需要输入锁屏密码）。「会更改 iPhone 上的设置」是系统对所有描述文件的通用提示：这个描述文件只添加一个证书，没有其他配置。
         </li>
         <li>
-          打开「设置 › 通用 › 关于本机」，拉到最下面进入<b>「证书信任设置」</b>，打开「LanShare Local CA」的开关。
+          打开「设置 › 通用 › 关于本机」，拉到最下面进入<b>「证书信任设置」</b>，打开<b>「{caName || "LanShare Local CA"}」</b>的开关。
+          列表里有好几个 LanShare Local CA 时，只开名称完全一致的这个；其他的一般是重置证书之前装的旧证书。
         </li>
         <li>回到 Safari 重新打开 LanShare，地址栏不再显示「不安全」。</li>
         <li>
@@ -35,7 +48,7 @@ export function CertGuide({ compact }: { compact?: boolean }) {
         <span>下载证书</span>
       </a>
       <p className="muted small">
-        核对指纹是为了确认证书确实来自你的电脑，而不是同一网络里冒充的人。这个证书只对局域网地址有效，不能用来冒充其他网站；不想用了可以在「设置 › 通用 › VPN 与设备管理」里移除。重置电脑端证书后需要重新安装。
+        核对指纹是为了确认证书确实来自你的电脑，而不是同一网络里冒充的人。这个证书只对局域网地址有效，不能用来冒充其他网站；旧证书或不想用了，可以在「设置 › 通用 › VPN 与设备管理」里按名称找到并移除。重置电脑端证书后需要重新安装（新证书名称末尾的编号不同）。
       </p>
     </section>
   );

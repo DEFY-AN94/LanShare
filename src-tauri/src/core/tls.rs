@@ -3,7 +3,8 @@
 //! The CA is name-constrained to local names (`localhost`, `*.local`) and
 //! private IP ranges, so even if its key leaked it could not impersonate
 //! public websites. The server certificate is re-issued when the machine's
-//! LAN addresses change or it nears expiry, and hot-swapped without restart.
+//! LAN addresses or `.local` name change or it nears expiry, and hot-swapped
+//! without restart.
 
 use anyhow::{Context, Result, bail};
 use axum_server::tls_rustls::RustlsConfig;
@@ -28,6 +29,8 @@ const CA_DAYS: i64 = 3650;
 /// Apple only trusts server certificates valid for at most 398 days.
 const LEAF_DAYS: i64 = 397;
 const RENEW_BEFORE_DAYS: i64 = 30;
+/// Every local CA's common name starts with this.
+const CA_NAME_PREFIX: &str = "LanShare Local CA";
 
 pub fn install_crypto_provider() {
     static ONCE: Once = Once::new();
@@ -41,13 +44,20 @@ pub fn install_crypto_provider() {
 struct CaInfo {
     cert_pem: String,
     fingerprint: String,
+    name: String,
+}
+
+impl CaInfo {
+    fn new(cert_pem: String) -> Result<CaInfo> {
+        Ok(CaInfo { fingerprint: Tls::fingerprint(&cert_pem)?, name: Tls::common_name(&cert_pem)?, cert_pem })
+    }
 }
 
 pub struct Tls {
     dir: PathBuf,
-    host_dns: Option<String>,
     config: RustlsConfig,
     ca: RwLock<CaInfo>,
+    leaf_dns: RwLock<Option<String>>,
     leaf_ips: RwLock<Vec<IpAddr>>,
 }
 
@@ -55,6 +65,14 @@ fn random_serial() -> SerialNumber {
     let mut b = random_bytes::<16>();
     b[0] = (b[0] & 0x7f) | 0x01; // positive, no leading zero byte
     SerialNumber::from_slice(&b)
+}
+
+/// Common name of a new CA, e.g. "LanShare Local CA (Mac) 2DD31B". iPhone
+/// settings list profiles and trusted roots by this name only, so the tag keeps
+/// CAs from other installs (or from before a reset) apart from the current one.
+pub fn ca_common_name(host_label: &str, tag: &str) -> String {
+    let label: String = host_label.chars().take(40).collect();
+    format!("{CA_NAME_PREFIX} ({label}) {tag}")
 }
 
 /// `Mac-mini.local` style DNS name for this computer, if the hostname is usable.
@@ -95,7 +113,8 @@ impl Tls {
         dir.join("server.key.pem")
     }
 
-    /// Loads (or creates) the CA and a server certificate covering `ips`.
+    /// Loads (or creates) the CA and a server certificate covering `host_dns` and `ips`.
+    /// An existing CA is kept as it is, including a name from an older version.
     pub fn init(dir: &Path, host_label: &str, host_dns: Option<String>, ips: &[IpAddr]) -> Result<Tls> {
         install_crypto_provider();
         std::fs::create_dir_all(dir)?;
@@ -113,9 +132,9 @@ impl Tls {
         let config = RustlsConfig::from_config(Arc::new(Self::server_config(&chain, &key)?));
         Ok(Tls {
             dir: dir.to_path_buf(),
-            host_dns,
             config,
-            ca: RwLock::new(CaInfo { fingerprint: Self::fingerprint(&ca_pem)?, cert_pem: ca_pem }),
+            ca: RwLock::new(CaInfo::new(ca_pem)?),
+            leaf_dns: RwLock::new(host_dns),
             leaf_ips: RwLock::new(wanted),
         })
     }
@@ -132,18 +151,31 @@ impl Tls {
         self.ca.read().unwrap().fingerprint.clone()
     }
 
-    /// Re-issues the server certificate if the LAN addresses changed.
-    pub fn ensure_ips(&self, ips: &[IpAddr]) -> Result<bool> {
+    /// The CA's common name, as iPhone settings show it.
+    pub fn ca_name(&self) -> String {
+        self.ca.read().unwrap().name.clone()
+    }
+
+    /// The `.local` name in the current server certificate.
+    pub fn leaf_dns(&self) -> Option<String> {
+        self.leaf_dns.read().unwrap().clone()
+    }
+
+    /// Re-issues the server certificate if the LAN addresses or the `.local`
+    /// name changed. A name that is not usable (`None`) keeps the current one.
+    pub fn ensure_names(&self, dns: Option<String>, ips: &[IpAddr]) -> Result<bool> {
         let wanted = Self::wanted_ips(ips);
-        if wanted.iter().all(|ip| self.leaf_ips.read().unwrap().contains(ip)) {
+        let dns = dns.or_else(|| self.leaf_dns());
+        if dns == self.leaf_dns() && wanted.iter().all(|ip| self.leaf_ips.read().unwrap().contains(ip)) {
             return Ok(false);
         }
         let ca_pem = self.ca_pem();
         let (_, issuer) = Self::load_ca(&self.dir)?;
-        let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.host_dns.as_deref(), &wanted, true)?;
+        let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, dns.as_deref(), &wanted, true)?;
         self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
+        tracing::info!("server certificate re-issued for {} and {} addresses", dns.as_deref().unwrap_or("no .local name"), wanted.len());
+        *self.leaf_dns.write().unwrap() = dns;
         *self.leaf_ips.write().unwrap() = wanted;
-        tracing::info!("server certificate re-issued for new LAN addresses");
         Ok(true)
     }
 
@@ -158,7 +190,7 @@ impl Tls {
         }
         let ips = self.leaf_ips.read().unwrap().clone();
         let (_, issuer) = Self::load_ca(&self.dir)?;
-        let (chain, key) = Self::ensure_leaf(&self.dir, &self.ca_pem(), &issuer, self.host_dns.as_deref(), &ips, true)?;
+        let (chain, key) = Self::ensure_leaf(&self.dir, &self.ca_pem(), &issuer, self.leaf_dns().as_deref(), &ips, true)?;
         self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
         tracing::info!("server certificate renewed before expiry");
         Ok(true)
@@ -168,9 +200,9 @@ impl Tls {
     pub fn reset(&self, host_label: &str, ips: &[IpAddr]) -> Result<()> {
         let (ca_pem, issuer) = Self::create_ca(&self.dir, host_label)?;
         let wanted = Self::wanted_ips(ips);
-        let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.host_dns.as_deref(), &wanted, true)?;
+        let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.leaf_dns().as_deref(), &wanted, true)?;
         self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
-        *self.ca.write().unwrap() = CaInfo { fingerprint: Self::fingerprint(&ca_pem)?, cert_pem: ca_pem };
+        *self.ca.write().unwrap() = CaInfo::new(ca_pem)?;
         *self.leaf_ips.write().unwrap() = wanted;
         Ok(())
     }
@@ -191,11 +223,25 @@ impl Tls {
         Ok(sha256_hex(der.as_ref()))
     }
 
+    pub(super) fn common_name(cert_pem: &str) -> Result<String> {
+        let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let x509 = pem.parse_x509().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let cn = x509.subject().iter_common_name().next().and_then(|cn| cn.as_str().ok()).unwrap_or_default();
+        Ok(cn.to_string())
+    }
+
     fn create_ca(dir: &Path, host_label: &str) -> Result<(String, Issuer<'static, KeyPair>)> {
+        let key = KeyPair::generate()?;
+        // The first bytes of the CA's Subject Key Identifier: fixed per key, so
+        // every new CA (each install, each reset) gets a different name.
+        let tag = hex::encode_upper(&CertificateParams::default().key_identifier(&key)[..3]);
+        Self::write_ca(dir, key, &ca_common_name(host_label, &tag))
+    }
+
+    pub(super) fn write_ca(dir: &Path, key: KeyPair, common_name: &str) -> Result<(String, Issuer<'static, KeyPair>)> {
         let mut p = CertificateParams::default();
         let mut dn = DistinguishedName::new();
-        let label: String = host_label.chars().take(40).collect();
-        dn.push(DnType::CommonName, format!("LanShare Local CA ({label})"));
+        dn.push(DnType::CommonName, common_name);
         dn.push(DnType::OrganizationName, "LanShare");
         p.distinguished_name = dn;
         p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
@@ -216,7 +262,6 @@ impl Tls {
             excluded_subtrees: vec![],
         });
         p.serial_number = Some(random_serial());
-        let key = KeyPair::generate()?;
         let cert = p.self_signed(&key)?;
         let cert_pem = cert.pem();
         write_private(&Self::ca_key_path(dir), &key.serialize_pem())?;
@@ -254,7 +299,7 @@ impl Tls {
     ) -> Result<(String, String)> {
         if !force
             && let (Ok(cert), Ok(key)) = (std::fs::read_to_string(Self::leaf_cert_path(dir)), std::fs::read_to_string(Self::leaf_key_path(dir)))
-            && Self::leaf_usable(&cert, ca_pem, ips).unwrap_or(false)
+            && Self::leaf_usable(&cert, ca_pem, host_dns, ips).unwrap_or(false)
         {
             return Ok((format!("{cert}{ca_pem}"), key));
         }
@@ -285,23 +330,28 @@ impl Tls {
         Ok((format!("{cert_pem}{ca_pem}"), key_pem))
     }
 
-    fn leaf_usable(leaf_pem: &str, ca_pem: &str, ips: &[IpAddr]) -> Result<bool> {
+    pub(super) fn leaf_usable(leaf_pem: &str, ca_pem: &str, dns: Option<&str>, ips: &[IpAddr]) -> Result<bool> {
         let (_, pem) = parse_x509_pem(leaf_pem.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
         let leaf = pem.parse_x509().map_err(|e| anyhow::anyhow!("{e}"))?;
         if leaf.validity().not_after.to_datetime() - OffsetDateTime::now_utc() < Duration::days(RENEW_BEFORE_DAYS) {
             return Ok(false);
         }
         let mut have: Vec<IpAddr> = Vec::new();
+        let mut have_dns: Vec<&str> = Vec::new();
         if let Some(san) = leaf.subject_alternative_name().map_err(|e| anyhow::anyhow!("{e}"))? {
             for gn in &san.value.general_names {
-                if let GeneralName::IPAddress(b) = gn
-                    && let Ok(v4) = <[u8; 4]>::try_from(*b)
-                {
-                    have.push(IpAddr::from(v4));
+                match gn {
+                    GeneralName::IPAddress(b) => {
+                        if let Ok(v4) = <[u8; 4]>::try_from(*b) {
+                            have.push(IpAddr::from(v4));
+                        }
+                    }
+                    GeneralName::DNSName(name) => have_dns.push(name),
+                    _ => {}
                 }
             }
         }
-        if ips.iter().any(|ip| !have.contains(ip)) {
+        if ips.iter().any(|ip| !have.contains(ip)) || dns.is_some_and(|d| !have_dns.contains(&d)) {
             return Ok(false);
         }
         let (_, ca) = parse_x509_pem(ca_pem.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -338,8 +388,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("server.pem")).unwrap(), leaf1);
 
         // New address: leaf re-issued, CA kept.
-        assert!(again.ensure_ips(&[ip1, ip2]).unwrap());
-        assert!(!again.ensure_ips(&[ip2]).unwrap());
+        assert!(again.ensure_names(local_dns_name("Test-Mac"), &[ip1, ip2]).unwrap());
+        assert!(!again.ensure_names(local_dns_name("Test-Mac"), &[ip2]).unwrap());
         assert_ne!(std::fs::read_to_string(dir.path().join("server.pem")).unwrap(), leaf1);
         assert_eq!(again.ca_fingerprint(), fp);
 
@@ -350,7 +400,7 @@ mod tests {
         again.reset("test", &[ip1]).unwrap();
         assert_ne!(again.ca_fingerprint(), fp);
         let leaf = std::fs::read_to_string(dir.path().join("server.pem")).unwrap();
-        assert!(Tls::leaf_usable(&leaf, &again.ca_pem(), &[ip1]).unwrap());
+        assert!(Tls::leaf_usable(&leaf, &again.ca_pem(), Some("test-mac.local"), &[ip1]).unwrap());
     }
 
     #[test]

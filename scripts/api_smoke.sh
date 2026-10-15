@@ -139,6 +139,13 @@ echo "== TLS"
 CERT=$(echo | openssl s_client -connect "${PHONE#https://}" -alpn h2 2>/dev/null)
 contains "ALPN h2 negotiated" "$CERT" 'ALPN protocol: h2'
 contains "chain includes local CA" "$CERT" 'LanShare Local CA'
+CANAME=$(curl -s -k "$PHONE/api/ca" | python3 -c 'import sys,json;print(json.load(sys.stdin)["name"])')
+contains "CA name has its own tag" "$CANAME" '^LanShare Local CA (.*) [0-9A-F]\{6\}$'
+contains "served CA is the one /api/ca names" "$CERT" "i:.*CN *= *$CANAME"
+SAN=$(echo "$CERT" | openssl x509 -noout -text 2>/dev/null | grep -A1 'Subject Alternative Name')
+if LHN=$(scutil --get LocalHostName 2>/dev/null); then
+  contains "leaf carries the Bonjour .local name" "$SAN" "DNS:$(echo "$LHN" | tr '[:upper:]' '[:lower:]').local"
+fi
 
 echo
 echo "passed: $pass  failed: $fail"

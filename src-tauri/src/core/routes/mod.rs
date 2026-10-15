@@ -57,6 +57,7 @@ fn api(state: &Shared) -> Router<Shared> {
     Router::new()
         .route("/api/pair/request", post(pair::request))
         .route("/api/pair/status/{id}", get(pair::status))
+        .route("/api/ca", get(pair::ca_info))
         .route("/api/ca.crt", get(pair::ca_cert))
         .route("/__local_login", get(local_login))
         .merge(authed)

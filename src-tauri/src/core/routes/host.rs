@@ -25,6 +25,7 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         addresses: state.addresses(),
         shared_root: crate::core::paths::shell_path(state.sandbox().root()).display().to_string(),
         ca_fingerprint: state.tls.ca_fingerprint(),
+        ca_name: state.tls.ca_name(),
         paused: state.is_paused(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })

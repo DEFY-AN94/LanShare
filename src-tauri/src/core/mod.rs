@@ -157,7 +157,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     let host_name = host_name();
     let addresses = net::lan_addresses();
     let ips: Vec<IpAddr> = addresses.iter().filter_map(|a| a.ip.parse().ok()).collect();
-    let tls = Tls::init(&opts.data_dir.join("tls"), &host_name, tls::local_dns_name(&host_name), &ips).context("prepare certificates")?;
+    let tls = Tls::init(&opts.data_dir.join("tls"), &host_name, net::local_dns_name(), &ips).context("prepare certificates")?;
 
     let lan_listener = bind_lan(config.port).context("bind LAN port")?;
     let lan_port = lan_listener.local_addr()?.port();
@@ -265,8 +265,8 @@ pub fn watch_shared_folder(state: &Shared) {
     });
 }
 
-/// Follows Wi-Fi changes (address list + certificate) and renews the
-/// certificate before it expires.
+/// Follows Wi-Fi changes and renames of the computer (address list +
+/// certificate) and renews the certificate before it expires.
 async fn watch_network(state: Shared) {
     let mut tick = tokio::time::interval(Duration::from_secs(20));
     let mut ticks: u64 = 0;
@@ -280,17 +280,20 @@ async fn watch_network(state: Shared) {
                 tracing::error!("certificate renewal failed: {e:#}");
             }
         }
-        let Ok(addresses) = tokio::task::spawn_blocking(net::lan_addresses).await else { continue };
-        if !state.set_addresses(addresses) {
+        let Ok((addresses, dns)) = tokio::task::spawn_blocking(|| (net::lan_addresses(), net::local_dns_name())).await else { continue };
+        let moved = state.set_addresses(addresses);
+        if !moved && dns.as_ref().is_none_or(|d| state.tls.leaf_dns().as_ref() == Some(d)) {
             continue;
         }
         let st = state.clone();
         let ips = state.address_ips();
-        match tokio::task::spawn_blocking(move || st.tls.ensure_ips(&ips)).await {
+        match tokio::task::spawn_blocking(move || st.tls.ensure_names(dns, &ips)).await {
             Ok(Err(e)) => tracing::error!("could not refresh certificate: {e:#}"),
             Err(e) => tracing::error!("certificate task failed: {e}"),
             Ok(Ok(_)) => {}
         }
-        state.emit(Audience::Host, "network", &json!({}));
+        if moved {
+            state.emit(Audience::Host, "network", &json!({}));
+        }
     }
 }

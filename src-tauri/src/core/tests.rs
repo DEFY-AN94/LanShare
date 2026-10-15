@@ -1,7 +1,7 @@
 //! In-process API tests: real routers, auth and handlers, no sockets.
 //! They run on every platform (including Windows CI).
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::Router;
@@ -17,8 +17,8 @@ use super::config::Config;
 use super::db::Db;
 use super::paths::Sandbox;
 use super::state::{AppState, Shared, StateParts};
-use super::tls::Tls;
-use super::{model::Address, routes};
+use super::tls::{self, Tls};
+use super::{model::Address, net, routes};
 
 const LOCAL_PORT: u16 = 53299;
 const TOKEN: &str = "test-local-token";
@@ -271,4 +271,121 @@ fn shared_folder_fallbacks() {
     let mut cfg = Config { shared_root: home.clone(), port: 1 };
     let sb = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
     assert_eq!(cfg.shared_root, sb.root());
+}
+
+/// First bytes of a certificate's Subject Key Identifier.
+fn subject_key_id(cert_pem: &str) -> Vec<u8> {
+    use x509_parser::extensions::ParsedExtension;
+    let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes()).unwrap();
+    let x509 = pem.parse_x509().unwrap();
+    x509.extensions()
+        .iter()
+        .find_map(|ext| match ext.parsed_extension() {
+            ParsedExtension::SubjectKeyIdentifier(id) => Some(id.0.to_vec()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn ca_names_tell_installs_apart() {
+    assert_eq!(tls::ca_common_name("Mac", "2DD31B"), "LanShare Local CA (Mac) 2DD31B");
+    assert_eq!(tls::ca_common_name(&"x".repeat(60), "ABCDEF"), format!("LanShare Local CA ({}) ABCDEF", "x".repeat(40)));
+
+    // Two installs on one computer (a dev run and the release app) get different names.
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let ta = Tls::init(a.path(), "Mac", None, &[]).unwrap();
+    let tb = Tls::init(b.path(), "Mac", None, &[]).unwrap();
+    assert_ne!(ta.ca_name(), tb.ca_name());
+    for t in [&ta, &tb] {
+        let name = t.ca_name();
+        let tag = name.strip_prefix("LanShare Local CA (Mac) ").unwrap();
+        assert!(tag.len() == 6 && tag.chars().all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c)), "{name}");
+        assert_eq!(tag, hex::encode_upper(&subject_key_id(&t.ca_pem())[..3]));
+        assert_eq!(Tls::common_name(&t.ca_pem()).unwrap(), name);
+    }
+
+    // So does every reset.
+    let before = ta.ca_name();
+    ta.reset("Mac", &[]).unwrap();
+    assert_ne!(ta.ca_name(), before);
+    assert!(ta.ca_name().starts_with("LanShare Local CA (Mac) "));
+    assert_eq!(Tls::common_name(&std::fs::read_to_string(a.path().join("ca.pem")).unwrap()).unwrap(), ta.ca_name());
+}
+
+#[test]
+fn existing_ca_keeps_its_name() {
+    // A CA from an older version (no tag) is reused as it is, not regenerated.
+    let dir = tempfile::tempdir().unwrap();
+    Tls::write_ca(dir.path(), rcgen::KeyPair::generate().unwrap(), "LanShare Local CA (Mac)").unwrap();
+    let pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
+    let t = Tls::init(dir.path(), "Mac", Some("mymac.local".into()), &[]).unwrap();
+    assert_eq!(t.ca_name(), "LanShare Local CA (Mac)");
+    assert_eq!(t.ca_pem(), pem);
+    assert_eq!(std::fs::read_to_string(dir.path().join("ca.pem")).unwrap(), pem);
+}
+
+#[test]
+fn local_dns_name_prefers_bonjour() {
+    assert_eq!(net::pick_local_dns_name(Some("MyMac"), "Mac").unwrap(), "mymac.local");
+    assert_eq!(net::pick_local_dns_name(None, "Mac").unwrap(), "mac.local");
+    assert_eq!(net::pick_local_dns_name(Some(""), "Mac.local").unwrap(), "mac.local");
+    assert!(net::pick_local_dns_name(None, "我的电脑").is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bonjour_name_matches_scutil() {
+    let Ok(out) = std::process::Command::new("scutil").args(["--get", "LocalHostName"]).output() else { return };
+    if !out.status.success() {
+        return; // no LocalHostName set
+    }
+    let expected = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(net::bonjour_host_name().as_deref(), Some(expected.as_str()));
+    assert_eq!(net::local_dns_name(), tls::local_dns_name(&expected));
+}
+
+#[test]
+fn leaf_follows_local_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let ip: IpAddr = "192.168.1.5".parse().unwrap();
+    let leaf = || std::fs::read_to_string(dir.path().join("server.pem")).unwrap();
+    let t = Tls::init(dir.path(), "Mac", Some("mac.local".into()), &[ip]).unwrap();
+    let (ca, first) = (t.ca_pem(), leaf());
+    assert!(Tls::leaf_usable(&first, &ca, Some("mac.local"), &[ip]).unwrap());
+
+    // Renamed while LanShare was not running: the next start re-issues the leaf and keeps the CA.
+    let t = Tls::init(dir.path(), "Mac", Some("mymac.local".into()), &[ip]).unwrap();
+    assert_ne!(leaf(), first);
+    assert_eq!(t.ca_pem(), ca);
+    assert!(Tls::leaf_usable(&leaf(), &ca, Some("mymac.local"), &[ip]).unwrap());
+    assert!(!Tls::leaf_usable(&leaf(), &ca, Some("mac.local"), &[ip]).unwrap());
+
+    // Same name: nothing to do. Unusable name: the current one stays.
+    assert!(!t.ensure_names(Some("mymac.local".into()), &[ip]).unwrap());
+    assert!(!t.ensure_names(None, &[ip]).unwrap());
+
+    // Renamed while running: re-issued, like an address change.
+    let before = leaf();
+    assert!(t.ensure_names(Some("studio.local".into()), &[ip]).unwrap());
+    assert_eq!(t.leaf_dns().as_deref(), Some("studio.local"));
+    assert_ne!(leaf(), before);
+    assert!(Tls::leaf_usable(&leaf(), &ca, Some("studio.local"), &[ip]).unwrap());
+
+    // A later address change keeps the new name.
+    let ip2: IpAddr = "10.0.0.9".parse().unwrap();
+    assert!(t.ensure_names(None, &[ip, ip2]).unwrap());
+    assert!(Tls::leaf_usable(&leaf(), &ca, Some("studio.local"), &[ip, ip2]).unwrap());
+}
+
+#[tokio::test]
+async fn ca_name_is_public_and_in_overview() {
+    let e = env();
+    let name = e.state.tls.ca_name();
+    assert!(name.starts_with("LanShare Local CA (test) "), "{name}");
+    let r = send(&e.lan, dev_req(Method::GET, "/api/ca", None, Body::empty(), false)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["name"], name.as_str());
+    let o = send(&e.local, host_req(Method::GET, "/api/host/overview", None)).await;
+    assert_eq!(o.json()["ca_name"], name.as_str());
 }

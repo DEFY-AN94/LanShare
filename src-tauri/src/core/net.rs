@@ -1,8 +1,9 @@
-//! Local network addresses and the "is this peer on the LAN" check.
+//! Local network addresses, the `.local` name and the "is this peer on the LAN" check.
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 use super::model::Address;
+use super::tls;
 
 /// Interfaces a phone can never reach: VPN tunnels, VM/container bridges, AirDrop links.
 fn is_virtual(name: &str) -> bool {
@@ -64,6 +65,55 @@ pub fn lan_addresses() -> Vec<Address> {
         (rank, name.clone())
     });
     found.into_iter().map(|(ip, iface)| Address { ip: ip.to_string(), iface }).collect()
+}
+
+/// `<name>.local` that phones can reach this computer at over mDNS (Bonjour).
+pub fn local_dns_name() -> Option<String> {
+    pick_local_dns_name(bonjour_host_name().as_deref(), &gethostname::gethostname().to_string_lossy())
+}
+
+/// macOS answers mDNS only for its Bonjour LocalHostName, which can differ
+/// from the hostname (a DHCP server may hand out "Mac"), so that name wins.
+/// Elsewhere the hostname is the mDNS name.
+pub fn pick_local_dns_name(bonjour: Option<&str>, hostname: &str) -> Option<String> {
+    bonjour.and_then(tls::local_dns_name).or_else(|| tls::local_dns_name(hostname))
+}
+
+/// The LocalHostName from System Settings › General › Sharing › Local hostname
+/// (what `scutil --get LocalHostName` prints).
+#[cfg(target_os = "macos")]
+pub fn bonjour_host_name() -> Option<String> {
+    use std::ffi::{CStr, c_char, c_void};
+
+    #[link(name = "SystemConfiguration", kind = "framework")]
+    unsafe extern "C" {
+        fn SCDynamicStoreCopyLocalHostName(store: *const c_void) -> *const c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringGetCString(s: *const c_void, buf: *mut c_char, len: isize, encoding: u32) -> u8;
+        fn CFRelease(cf: *const c_void);
+    }
+    const UTF8: u32 = 0x0800_0100;
+
+    // SAFETY: a NULL store opens a temporary session; the returned CFString is
+    // owned by us ("Copy") and released once copied into `buf`.
+    unsafe {
+        let name = SCDynamicStoreCopyLocalHostName(std::ptr::null());
+        if name.is_null() {
+            return None;
+        }
+        let mut buf = [0 as c_char; 256];
+        let ok = CFStringGetCString(name, buf.as_mut_ptr(), buf.len() as isize, UTF8) != 0;
+        CFRelease(name);
+        let name = CStr::from_ptr(buf.as_ptr()).to_string_lossy().trim().to_string();
+        (ok && !name.is_empty()).then_some(name)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn bonjour_host_name() -> Option<String> {
+    None
 }
 
 /// Only devices on the local network (or this machine) may talk to the LAN server.

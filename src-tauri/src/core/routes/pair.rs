@@ -7,7 +7,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::core::auth::{Listener, device_cookie_header};
 use crate::core::error::{ApiError, ApiResult};
@@ -67,6 +67,12 @@ pub async fn status(State(state): State<Shared>, Extension(listener): Extension<
         res.headers_mut().insert(header::SET_COOKIE, device_cookie_header(&c));
     }
     Ok(res)
+}
+
+/// Name of the current CA, so the iPhone guide can say which entry to trust.
+/// Public like the certificate itself (which contains the name).
+pub async fn ca_info(State(state): State<Shared>) -> Json<Value> {
+    Json(json!({ "name": state.tls.ca_name() }))
 }
 
 /// The CA certificate is public; serving it lets iPhones install and trust it.

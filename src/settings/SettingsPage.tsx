@@ -54,7 +54,8 @@ export function SettingsPage() {
   const resetCert = async () => {
     const ok = await dialog.confirm({
       title: "重置证书？",
-      message: "会生成新的根证书和服务器证书。已在 iPhone 上安装旧证书的话，需要删除旧证书并重新安装；已配对的设备不受影响。",
+      message:
+        "会生成新的根证书和服务器证书，新证书名称末尾的编号会变。已在 iPhone 上安装旧证书的话，需要在「VPN 与设备管理」里删除旧证书并重新安装；已配对的设备不受影响。",
       confirmText: "重置",
       danger: true,
     });
@@ -133,6 +134,15 @@ export function SettingsPage() {
 
       <section className="card">
         <h3 className="card-title">安全</h3>
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">本机根证书名称</div>
+            <code>{info.ca_name}</code>
+            <div className="muted small">
+              iPhone 的「证书信任设置」和「VPN 与设备管理」按这个名称列出证书。看到其他名称的 LanShare Local CA，一般是重置之前装的旧证书，可以删除。
+            </div>
+          </div>
+        </div>
         <div className="setting-row">
           <div>
             <div className="setting-title">本机根证书指纹（SHA-256）</div>

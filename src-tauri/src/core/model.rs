@@ -106,6 +106,8 @@ pub struct HostOverview {
     pub addresses: Vec<Address>,
     pub shared_root: String,
     pub ca_fingerprint: String,
+    /// The CA's name as iPhone settings list it.
+    pub ca_name: String,
     pub paused: bool,
     pub version: String,
 }

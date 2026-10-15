@@ -91,6 +91,8 @@ export interface HostOverview {
   addresses: Address[];
   shared_root: string;
   ca_fingerprint: string;
+  /** The local CA's name, as iPhone settings list it. */
+  ca_name: string;
   paused: boolean;
   version: string;
 }
