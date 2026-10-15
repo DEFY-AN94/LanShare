@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
+import { usePhotoTip } from "../components/PhotoTip";
 import { useToast } from "../components/Toast";
 
 interface Props {
@@ -16,6 +17,7 @@ export function Composer({ disabled, placeholder = "输入消息", onSendText, o
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const photoTip = usePhotoTip(() => fileRef.current?.click());
   const toast = useToast();
   const canPaste = typeof navigator.clipboard?.readText === "function";
 
@@ -53,7 +55,7 @@ export function Composer({ disabled, placeholder = "输入消息", onSendText, o
 
   return (
     <div className="composer">
-      <button className="icon-btn" aria-label="发送文件" title="发送文件" disabled={disabled} onClick={() => fileRef.current?.click()}>
+      <button className="icon-btn" aria-label="发送文件" title="发送文件" disabled={disabled} onClick={photoTip.open}>
         <Icon name="paperclip" />
       </button>
       <input
@@ -99,6 +101,7 @@ export function Composer({ disabled, placeholder = "输入消息", onSendText, o
           <Icon name="send" size={18} strokeWidth={2.4} />
         </button>
       )}
+      {photoTip.element}
     </div>
   );
 }

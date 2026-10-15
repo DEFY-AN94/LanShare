@@ -245,3 +245,30 @@ async fn static_shell_has_security_headers() {
     assert_eq!(r.headers[header::X_FRAME_OPTIONS], "DENY");
     assert_eq!(send(&e.lan, dev_req(Method::GET, "/api/nope", None, Body::empty(), false)).await.status, StatusCode::NOT_FOUND);
 }
+
+#[test]
+fn shared_folder_fallbacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let data = home.join("Library/Application Support/app");
+    std::fs::create_dir_all(&data).unwrap();
+
+    // Missing folder whose parent exists: created in place.
+    let wanted = home.join("Shares/LanShare");
+    std::fs::create_dir_all(home.join("Shares")).unwrap();
+    let mut cfg = Config { shared_root: wanted.clone(), port: 1 };
+    let sb = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
+    assert_eq!(sb.root(), std::fs::canonicalize(&wanted).unwrap());
+
+    // Unplugged drive (parent missing): fall back to ~/LanShare, keep the setting.
+    let unplugged = dir.path().join("Volumes/T7/Media");
+    let mut cfg = Config { shared_root: unplugged.clone(), port: 1 };
+    let sb = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
+    assert!(sb.root().ends_with("LanShare"));
+    assert_eq!(cfg.shared_root, unplugged);
+
+    // Unsafe choice (home itself): fall back and overwrite the setting.
+    let mut cfg = Config { shared_root: home.clone(), port: 1 };
+    let sb = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
+    assert_eq!(cfg.shared_root, sb.root());
+}

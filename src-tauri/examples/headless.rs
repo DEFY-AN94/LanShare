@@ -17,8 +17,9 @@ async fn main() -> anyhow::Result<()> {
     lanshare_lib::init_logging();
     let args: Vec<String> = std::env::args().collect();
     let cwd = std::env::current_dir()?;
-    let data_dir = arg(&args, "--data").map(PathBuf::from).unwrap_or_else(|| cwd.join(".dev-data/app"));
-    let shared_root = arg(&args, "--shared").map(PathBuf::from).or_else(|| Some(cwd.join(".dev-data/shared")));
+    // Relative paths are resolved against the current directory.
+    let data_dir = arg(&args, "--data").map(|p| cwd.join(p)).unwrap_or_else(|| cwd.join(".dev-data/app"));
+    let shared_root = Some(arg(&args, "--shared").map(|p| cwd.join(p)).unwrap_or_else(|| cwd.join(".dev-data/shared")));
     let home_dir = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_else(|| cwd.clone());
     let port = arg(&args, "--port").and_then(|p| p.parse().ok());
     let local_port = arg(&args, "--local-port").and_then(|p| p.parse().ok()).unwrap_or(0);

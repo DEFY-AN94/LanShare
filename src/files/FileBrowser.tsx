@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
+import { usePhotoTip } from "../components/PhotoTip";
 import { ShareSheet } from "../components/ShareSheet";
 import { useToast } from "../components/Toast";
 import { fileIcon } from "../chat/MessageBubble";
@@ -29,6 +30,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   const [sharing, setSharing] = useState<FileEntry | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const photoTip = usePhotoTip(() => fileInput.current?.click());
   const toast = useToast();
   const dialog = useDialog();
   const pathRef = useRef(path);
@@ -180,7 +182,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
               <button className="icon-btn" title="新建文件夹" aria-label="新建文件夹" onClick={() => void mkdir()}>
                 <Icon name="folder-plus" />
               </button>
-              <button className="btn btn-primary btn-small" onClick={() => fileInput.current?.click()}>
+              <button className="btn btn-primary btn-small" onClick={photoTip.open}>
                 <Icon name="upload" size={16} />
                 <span>上传</span>
               </button>
@@ -236,6 +238,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
       </div>
 
       <UploadPanel />
+      {photoTip.element}
       {dragging && <div className="drop-overlay">松开即可上传到「{segments[segments.length - 1] ?? "共享文件夹"}」</div>}
       {menuFor && (
         <ActionSheet

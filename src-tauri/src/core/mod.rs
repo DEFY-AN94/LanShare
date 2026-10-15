@@ -109,8 +109,16 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
     } else {
         match Sandbox::existing(&configured) {
             Ok(sb) => Some(sb),
+            // Folder deleted (or never created) but its parent is there: recreate it.
+            Err(_) if configured.is_absolute() && configured.parent().is_some_and(|p| p.is_dir()) => match Sandbox::new(&configured) {
+                Ok(sb) => Some(sb),
+                Err(e) => {
+                    tracing::warn!("cannot create shared folder {} ({e}); using {} for now", configured.display(), default.display());
+                    None
+                }
+            },
             Err(e) => {
-                // Not saved over: the folder comes back once the drive is reconnected.
+                // e.g. an unplugged drive. Not saved over: the folder comes back once it is reconnected.
                 tracing::warn!("shared folder {} is unavailable ({e}); using {} for now", configured.display(), default.display());
                 None
             }

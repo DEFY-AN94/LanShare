@@ -1338,3 +1338,27 @@ h2 {
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
 }
+
+/* ---------- M5: upload tip ---------- */
+.tip-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.tip-list b {
+  color: var(--text);
+}
+.tip-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.tip-check input {
+  width: 18px;
+  height: 18px;
+}
