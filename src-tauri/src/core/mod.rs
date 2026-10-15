@@ -90,9 +90,19 @@ fn bind_lan(preferred: u16) -> std::io::Result<TcpListener> {
     Err(last_err.unwrap_or_else(|| std::io::Error::other("no free port")))
 }
 
+/// The name phones and new CA certificates show for this computer.
 pub fn host_name() -> String {
-    let raw = gethostname::gethostname().to_string_lossy().into_owned();
-    let name = raw.trim_end_matches(".local").trim();
+    pick_host_name(net::computer_name().as_deref(), &gethostname::gethostname().to_string_lossy())
+}
+
+/// The macOS Computer Name is what the user picked ("MyMac"); the hostname
+/// may be one a DHCP server handed out ("Mac"). Elsewhere the hostname is the
+/// computer's name.
+fn pick_host_name(computer_name: Option<&str>, hostname: &str) -> String {
+    let name = match computer_name.map(str::trim) {
+        Some(n) if !n.is_empty() => n,
+        _ => hostname.trim().trim_end_matches(".local").trim(),
+    };
     if name.is_empty() { "我的电脑".to_string() } else { name.to_string() }
 }
 

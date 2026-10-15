@@ -142,6 +142,11 @@ contains "chain includes local CA" "$CERT" 'LanShare Local CA'
 CANAME=$(curl -s -k "$PHONE/api/ca" | python3 -c 'import sys,json;print(json.load(sys.stdin)["name"])')
 contains "CA name has its own tag" "$CANAME" '^LanShare Local CA (.*) [0-9A-F]\{6\}$'
 contains "served CA is the one /api/ca names" "$CERT" "i:.*CN *= *$CANAME"
+HN=$(curl "${H[@]}" "$LOCAL/api/host/overview" | python3 -c 'import sys,json;print(json.load(sys.stdin)["host_name"])')
+check "CA label is the host name" "$(echo "$CANAME" | sed 's/ [0-9A-F]\{6\}$//')" "LanShare Local CA ($HN)"
+if CN=$(scutil --get ComputerName 2>/dev/null); then
+  check "host name is the Computer Name" "$HN" "$CN"
+fi
 SAN=$(echo "$CERT" | openssl x509 -noout -text 2>/dev/null | grep -A1 'Subject Alternative Name')
 if LHN=$(scutil --get LocalHostName 2>/dev/null); then
   contains "leaf carries the Bonjour .local name" "$SAN" "DNS:$(echo "$LHN" | tr '[:upper:]' '[:lower:]').local"

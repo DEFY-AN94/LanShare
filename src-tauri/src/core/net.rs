@@ -1,4 +1,4 @@
-//! Local network addresses, the `.local` name and the "is this peer on the LAN" check.
+//! Local network addresses, this computer's names and the "is this peer on the LAN" check.
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
@@ -83,11 +83,36 @@ pub fn pick_local_dns_name(bonjour: Option<&str>, hostname: &str) -> Option<Stri
 /// (what `scutil --get LocalHostName` prints).
 #[cfg(target_os = "macos")]
 pub fn bonjour_host_name() -> Option<String> {
+    // SAFETY: a NULL store opens a temporary session; the CFString is ours.
+    unsafe { macos::take_string(macos::SCDynamicStoreCopyLocalHostName(std::ptr::null())) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn bonjour_host_name() -> Option<String> {
+    None
+}
+
+/// The Computer Name from System Settings › General › Sharing (what
+/// `scutil --get ComputerName` prints), e.g. "MyMac" or "小明的 MacBook Pro".
+#[cfg(target_os = "macos")]
+pub fn computer_name() -> Option<String> {
+    // SAFETY: as above; the encoding out-parameter may be NULL.
+    unsafe { macos::take_string(macos::SCDynamicStoreCopyComputerName(std::ptr::null(), std::ptr::null_mut())) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn computer_name() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
     use std::ffi::{CStr, c_char, c_void};
 
     #[link(name = "SystemConfiguration", kind = "framework")]
     unsafe extern "C" {
-        fn SCDynamicStoreCopyLocalHostName(store: *const c_void) -> *const c_void;
+        pub fn SCDynamicStoreCopyLocalHostName(store: *const c_void) -> *const c_void;
+        pub fn SCDynamicStoreCopyComputerName(store: *const c_void, encoding: *mut u32) -> *const c_void;
     }
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -96,24 +121,25 @@ pub fn bonjour_host_name() -> Option<String> {
     }
     const UTF8: u32 = 0x0800_0100;
 
-    // SAFETY: a NULL store opens a temporary session; the returned CFString is
-    // owned by us ("Copy") and released once copied into `buf`.
-    unsafe {
-        let name = SCDynamicStoreCopyLocalHostName(std::ptr::null());
-        if name.is_null() {
+    /// Copies out and releases a CFString from a SystemConfiguration "Copy"
+    /// function. Blank names and NULL give `None`.
+    ///
+    /// # Safety
+    /// `s` must be NULL or a CFString the caller owns.
+    pub unsafe fn take_string(s: *const c_void) -> Option<String> {
+        if s.is_null() {
             return None;
         }
-        let mut buf = [0 as c_char; 256];
-        let ok = CFStringGetCString(name, buf.as_mut_ptr(), buf.len() as isize, UTF8) != 0;
-        CFRelease(name);
-        let name = CStr::from_ptr(buf.as_ptr()).to_string_lossy().trim().to_string();
-        (ok && !name.is_empty()).then_some(name)
+        // Room for a long non-ASCII Computer Name (up to 4 bytes a character).
+        let mut buf = [0 as c_char; 1024];
+        let ok = unsafe { CFStringGetCString(s, buf.as_mut_ptr(), buf.len() as isize, UTF8) } != 0;
+        unsafe { CFRelease(s) };
+        if !ok {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().trim().to_string();
+        (!text.is_empty()).then_some(text)
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn bonjour_host_name() -> Option<String> {
-    None
 }
 
 /// Only devices on the local network (or this machine) may talk to the LAN server.

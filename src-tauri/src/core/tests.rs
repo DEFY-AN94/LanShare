@@ -389,3 +389,24 @@ async fn ca_name_is_public_and_in_overview() {
     let o = send(&e.local, host_req(Method::GET, "/api/host/overview", None)).await;
     assert_eq!(o.json()["ca_name"], name.as_str());
 }
+
+#[test]
+fn host_name_prefers_computer_name() {
+    assert_eq!(super::pick_host_name(Some("MyMac"), "Mac"), "MyMac");
+    assert_eq!(super::pick_host_name(Some("小明的 MacBook Pro"), "Mac"), "小明的 MacBook Pro");
+    assert_eq!(super::pick_host_name(Some("  "), "Mac.local"), "Mac");
+    assert_eq!(super::pick_host_name(None, "DESKTOP-AB12"), "DESKTOP-AB12");
+    assert_eq!(super::pick_host_name(None, " .local "), "我的电脑");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn computer_name_matches_scutil() {
+    let Ok(out) = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output() else { return };
+    if !out.status.success() {
+        return; // no Computer Name set
+    }
+    let expected = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(net::computer_name().as_deref(), Some(expected.as_str()));
+    assert_eq!(super::host_name(), expected);
+}
