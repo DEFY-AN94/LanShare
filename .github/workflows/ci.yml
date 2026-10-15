@@ -20,7 +20,8 @@ jobs:
         os: ${{ fromJSON(github.event_name == 'pull_request' && '["windows-latest","macos-latest"]' || '["windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     env:
-      PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+      # The runner context is not available at job level; derive it from the matrix.
+      PYTHON: ${{ startsWith(matrix.os, 'windows') && 'python' || 'python3' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
