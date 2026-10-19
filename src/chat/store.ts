@@ -250,4 +250,16 @@ function ensureSubscribed() {
   events.on("cleared", () => {
     for (const key of convs.keys()) update(key, (s) => ({ ...s, messages: [], hasMore: false }));
   });
+  // Automatic cleanup on the computer deleted everything older than `before`.
+  events.on("pruned", (data) => {
+    const before = (data as { before?: number } | null)?.before;
+    if (typeof before !== "number") return;
+    for (const key of convs.keys()) {
+      update(key, (s) => {
+        const kept = s.messages.filter((m) => m.created_at >= before);
+        // Everything older is gone as well, so there is nothing more to page in.
+        return kept.length === s.messages.length ? s : { ...s, messages: kept, hasMore: false };
+      });
+    }
+  });
 }

@@ -12,7 +12,17 @@ pub struct Config {
     pub shared_root: PathBuf,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Kept across restarts, so a pause set on an untrusted network is not
+    /// quietly undone by relaunching (or, later, by launch at login).
+    #[serde(default)]
+    pub paused: bool,
+    /// Chat messages older than this many days are deleted; 0 keeps them.
+    #[serde(default)]
+    pub chat_retention_days: u32,
 }
+
+/// The choices Settings offers for automatic chat cleanup.
+pub const RETENTION_CHOICES: [u32; 3] = [0, 30, 90];
 
 fn default_port() -> u16 {
     DEFAULT_PORT
@@ -25,7 +35,7 @@ impl Config {
 
     /// Loads `config.json`, falling back to `~/LanShare` on port 39210.
     pub fn load_or_default(data_dir: &Path, home: &Path) -> Config {
-        let fallback = Config { shared_root: home.join("LanShare"), port: DEFAULT_PORT };
+        let fallback = Config { shared_root: home.join("LanShare"), port: DEFAULT_PORT, paused: false, chat_retention_days: 0 };
         match std::fs::read(Self::file(data_dir)) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
                 tracing::warn!("config.json is unreadable ({e}); using defaults");

@@ -29,6 +29,8 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         paused: state.is_paused(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         network_warning: state.network_warning(),
+        chat_retention_days: state.chat_retention_days(),
+        verbose_logging: crate::core::logging::verbose(),
     })
 }
 
@@ -173,6 +175,11 @@ fn is_launchable(path: &std::path::Path) -> bool {
         "scptd", "applescript", "workflow", "action", "fileloc", "inetloc", "webloc", "prefpane", "kext", "plugin", "osax", "dylib", "exe",
         "bat", "cmd", "com", "scr", "msi", "msp", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "lnk", "url", "reg",
         "cpl", "msc", "appref-ms", "settingcontent-ms", "library-ms", "inf", "pif", "application", "gadget", "desktop", "appimage",
+        // Windows help files can run script; packages install; disk images mount.
+        "chm", "msix", "msixbundle", "appx", "appxbundle", "appinstaller", "iso", "img", "vhd", "vhdx",
+        // More Windows types that run, install or reach out when opened.
+        "pyw", "pyz", "pyzw", "msu", "ppkg", "searchconnector-ms", "search-ms", "website", "scf", "theme", "themepack", "deskthemepack",
+        "diagcab",
     ];
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if RISKY.contains(&ext.as_str()) {
@@ -191,6 +198,30 @@ fn is_launchable(path: &std::path::Path) -> bool {
     false
 }
 
+/// The shell's error text quotes the path or link, which must not reach the log.
+fn shell_failed() -> ApiError {
+    ApiError::internal("the system could not open the item")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_launchable;
+    use std::path::Path;
+
+    #[test]
+    fn files_that_run_or_mount_are_only_revealed() {
+        for name in [
+            "setup.exe", "run.ps1", "link.lnk", "help.chm", "HELP.CHM", "app.msix", "pkg.appx", "x.appinstaller", "disk.iso", "disk.img",
+            "disk.vhd", "disk.vhdx", "Tool.app", "x.sh", "x.pyw", "fix.diagcab", "update.msu", "x.scf", "dark.theme",
+        ] {
+            assert!(is_launchable(Path::new(name)), "{name}");
+        }
+        for name in ["photo.jpg", "doc.pdf", "notes.txt", "movie.mov", "archive.zip"] {
+            assert!(!is_launchable(Path::new(name)), "{name}");
+        }
+    }
+}
+
 /// Opens with the default app; launchable files are revealed in the folder instead.
 pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
     let path = state.sandbox().resolve_existing(&b.path)?;
@@ -200,14 +231,14 @@ pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiRe
     tokio::task::spawn_blocking(move || if reveal { bridge.reveal_path(&path) } else { bridge.open_path(&path) })
         .await
         .map_err(ApiError::internal)?
-        .map_err(ApiError::internal)?;
+        .map_err(|_| shell_failed())?;
     Ok(Json(json!({ "action": if reveal { "revealed" } else { "opened" } })))
 }
 
 pub async fn reveal(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<StatusCode> {
     let path = state.sandbox().resolve_existing(&b.path)?;
     let bridge = state.bridge.clone();
-    tokio::task::spawn_blocking(move || bridge.reveal_path(&path)).await.map_err(ApiError::internal)?.map_err(ApiError::internal)?;
+    tokio::task::spawn_blocking(move || bridge.reveal_path(&path)).await.map_err(ApiError::internal)?.map_err(|_| shell_failed())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -226,7 +257,7 @@ pub async fn open_url(State(state): State<Shared>, Json(b): Json<UrlBody>) -> Ap
     if !ok {
         return Err(ApiError::bad_request("只能打开 http/https 链接"));
     }
-    state.bridge.open_url(url).map_err(ApiError::internal)?;
+    state.bridge.open_url(url).map_err(|_| shell_failed())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -251,7 +282,7 @@ pub async fn pick_shared_root(State(state): State<Shared>, Extension(_s): Extens
     state.set_sandbox(sandbox);
     crate::core::watch_shared_folder(&state);
     state.emit_files_changed("");
-    tracing::info!("shared folder changed to {}", dir.display());
+    tracing::info!("shared folder changed");
     Ok(overview(State(state)).await.into_response())
 }
 
@@ -263,8 +294,45 @@ pub async fn reset_cert(State(state): State<Shared>) -> ApiResult<StatusCode> {
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct RetentionBody {
+    days: u32,
+}
+
+/// Automatic chat cleanup: 0 (off), 30 or 90 days. Applies at once.
+pub async fn set_chat_retention(State(state): State<Shared>, Json(b): Json<RetentionBody>) -> ApiResult<Json<Value>> {
+    if !crate::core::config::RETENTION_CHOICES.contains(&b.days) {
+        return Err(ApiError::bad_request("只能选择不自动删除、30 天或 90 天"));
+    }
+    state.set_chat_retention_days(b.days).map_err(ApiError::internal)?;
+    let st = state.clone();
+    let deleted = tokio::task::spawn_blocking(move || st.prune_old_messages()).await.map_err(ApiError::internal)??;
+    Ok(Json(json!({ "days": b.days, "deleted": deleted })))
+}
+
+/// Opens `<data dir>/logs` in Finder / File Explorer.
+pub async fn open_logs(State(state): State<Shared>) -> ApiResult<StatusCode> {
+    let dir = crate::core::logging::dir().ok_or_else(|| ApiError::conflict("日志文件还没有创建"))?;
+    let bridge = state.bridge.clone();
+    tokio::task::spawn_blocking(move || bridge.open_path(&dir)).await.map_err(ApiError::internal)?.map_err(|_| shell_failed())?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct VerboseBody {
+    on: bool,
+}
+
+/// Debug-level logging for troubleshooting; off again after a restart.
+pub async fn set_verbose_logging(Json(b): Json<VerboseBody>) -> Json<Value> {
+    crate::core::logging::set_verbose(b.on);
+    tracing::info!("verbose logging {}", if b.on { "on" } else { "off" });
+    Json(json!({ "on": b.on }))
+}
+
 pub async fn clear_messages(State(state): State<Shared>) -> ApiResult<StatusCode> {
     state.db.clear_messages()?;
+    state.mark_pruned(now_ms());
     state.emit(Audience::Everyone, "cleared", &json!({}));
     Ok(StatusCode::NO_CONTENT)
 }

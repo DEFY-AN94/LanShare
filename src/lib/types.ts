@@ -97,6 +97,10 @@ export interface HostOverview {
   paused: boolean;
   version: string;
   network_warning: string | null;
+  /** Automatic chat cleanup: messages older than this many days are deleted; 0 = off. */
+  chat_retention_days: number;
+  /** Debug-level logging; resets when LanShare restarts. */
+  verbose_logging: boolean;
 }
 
 export interface PairRequestResponse {

@@ -61,6 +61,7 @@ pub async fn unpair(State(state): State<Shared>, Extension(session): Extension<S
 
 pub async fn events(State(state): State<Shared>, Extension(session): Extension<Session>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.events.subscribe();
+    let state_pruned = state.pruned_before();
     let guard = PresenceGuard::new(state.clone(), session.device_id().map(str::to_owned));
     let init = (rx, guard, session, state, false);
     let stream = futures_util::stream::unfold(init, |(mut rx, guard, session, state, done)| async move {
@@ -92,5 +93,7 @@ pub async fn events(State(state): State<Shared>, Extension(session): Extension<S
     // Send a first byte right away so the browser reports the stream as open
     // without waiting for the first real event or keep-alive.
     let hello = futures_util::stream::once(async { Ok(Event::default().comment("connected")) });
-    Sse::new(hello.chain(stream)).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+    // A client that was offline during a cleanup or clear drops those messages now.
+    let pruned = Some(state_pruned).filter(|&before| before > 0).map(|before| Ok(Event::default().event("pruned").data(json!({ "before": before }).to_string())));
+    Sse::new(hello.chain(futures_util::stream::iter(pruned)).chain(stream)).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
 }

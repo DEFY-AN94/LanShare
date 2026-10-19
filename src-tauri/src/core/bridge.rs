@@ -27,7 +27,8 @@ fn run(cmd: &mut Command) -> Result<(), String> {
 
 impl HostBridge for HeadlessBridge {
     fn notify(&self, title: &str, body: &str) {
-        tracing::info!("[notification] {title}: {body}");
+        // The body is message text or a file name: log its length only.
+        tracing::info!("[notification] {title} ({} characters)", body.chars().count());
     }
 
     fn open_path(&self, path: &Path) -> Result<(), String> {

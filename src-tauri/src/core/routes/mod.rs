@@ -36,6 +36,9 @@ fn api(state: &Shared) -> Router<Shared> {
         .route("/api/host/shared-root/pick", post(host::pick_shared_root))
         .route("/api/host/reset-cert", post(host::reset_cert))
         .route("/api/host/clear-messages", post(host::clear_messages))
+        .route("/api/host/chat-retention", post(host::set_chat_retention))
+        .route("/api/host/logs/open", post(host::open_logs))
+        .route("/api/host/logs/verbose", post(host::set_verbose_logging))
         .route_layer(from_fn(require_host));
 
     let authed = Router::new()

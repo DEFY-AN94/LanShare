@@ -91,6 +91,8 @@ scripts/api_smoke.sh             end-to-end API test
 
 - App data (database, certificates, config): `~/Library/Application Support/com.lanshare.desktop/` on macOS, `%APPDATA%\com.lanshare.desktop\` on Windows.
 - Shared folder: `~/LanShare` by default (`%USERPROFILE%\LanShare` on Windows). Files received in chat are saved to `收件箱` (Inbox) and files sent to the phone to `已发送` (Sent); these two folders are only visible on the computer.
+- Logs: the `logs` folder inside the app data folder (Settings › **打开日志文件夹** (Open log folder)), at most about 10 MB. They never record message text or file names; **详细日志** (Verbose logging) in Settings adds detail for troubleshooting until LanShare restarts.
+- Chat history can be deleted automatically after 30 or 90 days (Settings › **自动删除旧聊天记录** (Delete old chat history automatically)). Deleted messages are wiped from the database file, not just hidden.
 - LAN port: 39210 by default (if it is taken, LanShare picks another one and remembers it).
 
 ## Known limitations

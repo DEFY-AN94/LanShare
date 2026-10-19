@@ -33,9 +33,11 @@ export function SettingsPage() {
     try {
       await p;
       if (ok) toast(ok, "success");
-      await load();
     } catch (e) {
       toast((e as Error).message, "error");
+    } finally {
+      // Show what the computer really has, also after a failure.
+      await load();
     }
   };
 
@@ -70,6 +72,19 @@ export function SettingsPage() {
       danger: true,
     });
     if (ok) await run(api.post("/api/host/clear-messages"), "聊天记录已清空");
+  };
+
+  const setRetention = async (days: number) => {
+    if (days > 0) {
+      const ok = await dialog.confirm({
+        title: `只保留最近 ${days} 天的聊天记录？`,
+        message: `超过 ${days} 天的消息会立即从这台电脑上删除，无法恢复；以后每 6 小时检查一次。聊天里收发的文件仍保留在共享文件夹中。`,
+        confirmText: "确定",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    await run(api.post("/api/host/chat-retention", { days }), days > 0 ? `已设为保留 ${days} 天` : "已关闭自动删除");
   };
 
   const fingerprint = info.ca_fingerprint.match(/.{1,2}/g)?.join(":").toUpperCase() ?? "";
@@ -167,9 +182,45 @@ export function SettingsPage() {
       <section className="card">
         <h3 className="card-title">聊天记录</h3>
         <div className="setting-row">
+          <div>
+            <div className="setting-title">自动删除旧聊天记录</div>
+            <div className="muted small">超过所选时间的消息会自动删除。聊天里收发的文件仍保留在共享文件夹中。</div>
+          </div>
+          <label>
+            <span className="sr-only">自动删除旧聊天记录</span>
+            <select className="input input-small" value={info.chat_retention_days} onChange={(e) => void setRetention(Number(e.target.value))}>
+              <option value={0}>不自动删除</option>
+              <option value={30}>保留 30 天</option>
+              <option value={90}>保留 90 天</option>
+            </select>
+          </label>
+        </div>
+        <div className="setting-row">
           <div className="muted small">聊天记录只保存在这台电脑上。</div>
           <button className="btn btn-danger-outline" onClick={() => void clearMessages()}>
             清空所有聊天记录
+          </button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h3 className="card-title">日志</h3>
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">详细日志{info.verbose_logging ? "（已打开）" : ""}</div>
+            <div className="muted small">排查连接问题时打开，会多记录一些细节，例如证书握手失败。重启 LanShare 后自动关闭。</div>
+          </div>
+          <button
+            className={`btn ${info.verbose_logging ? "btn-primary" : ""}`}
+            onClick={() => void run(api.post("/api/host/logs/verbose", { on: !info.verbose_logging }))}
+          >
+            {info.verbose_logging ? "关闭" : "打开"}
+          </button>
+        </div>
+        <div className="setting-row">
+          <div className="muted small">日志只保存在这台电脑上，最多约 10 MB，不会记录消息内容和文件名。</div>
+          <button className="btn" onClick={() => void run(api.post("/api/host/logs/open"))}>
+            打开日志文件夹
           </button>
         </div>
       </section>

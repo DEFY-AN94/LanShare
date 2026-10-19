@@ -15,7 +15,7 @@ use crate::core::auth::Session;
 use crate::core::error::{ApiError, ApiResult};
 use crate::core::model::{DirListing, FileEntry};
 use crate::core::paths::{Sandbox, sanitize_filename, segments};
-use crate::core::state::{INBOX_DIR, SENT_DIR, Shared};
+use crate::core::state::{AppState, INBOX_DIR, SENT_DIR, Shared, is_chat_path};
 use crate::core::transfer::{REJECTED_UPLOAD_DRAIN, discard_body, receive_upload, serve_path};
 
 fn require_write(session: &Session) -> ApiResult<()> {
@@ -24,15 +24,34 @@ fn require_write(session: &Session) -> ApiResult<()> {
 
 /// Chat attachments of every conversation live in 收件箱/已发送, so phones
 /// reach them only through their own messages, never by browsing.
-fn is_chat_folder(rel: &str) -> bool {
-    matches!(segments(rel).ok().and_then(|s| s.first().copied()), Some(INBOX_DIR | SENT_DIR))
-}
-
 fn require_visible(session: &Session, rel: &str) -> ApiResult<()> {
-    if !session.is_host() && is_chat_folder(rel) {
+    if !session.is_host() && is_chat_path(rel) {
         return Err(ApiError::forbidden("聊天收发的文件只在电脑上可见"));
     }
     Ok(())
+}
+
+/// The same check on where a path really leads: a symlink or a Windows 8.3
+/// alias can name a chat folder without spelling it, and an earlier shared
+/// folder's chat folders may now sit inside this one.
+fn require_visible_at(session: &Session, state: &AppState, resolved: &FsPath) -> ApiResult<()> {
+    if !session.is_host() && state.is_chat_location(resolved) {
+        return Err(ApiError::forbidden("聊天收发的文件只在电脑上可见"));
+    }
+    Ok(())
+}
+
+/// Phones may not create items named like the chat folders at the top level.
+fn require_unreserved(session: &Session, sandbox: &Sandbox, dir: &FsPath, name: &str) -> ApiResult<()> {
+    if !session.is_host() && dir == sandbox.root() && matches!(name, INBOX_DIR | SENT_DIR) {
+        return Err(ApiError::conflict("这个名称留给聊天文件夹使用"));
+    }
+    Ok(())
+}
+
+/// A listed entry that is, or (through a symlink) leads into, a chat folder.
+fn leads_into_chat_folder(state: &AppState, sandbox: &Sandbox, entry: &FileEntry) -> bool {
+    is_chat_path(&entry.path) || sandbox.resolve_existing(&entry.path).is_ok_and(|p| state.is_chat_location(&p))
 }
 
 /// Names never shown to clients.
@@ -111,18 +130,27 @@ pub async fn list(State(state): State<Shared>, Extension(session): Extension<Ses
     require_visible(&session, &q.path)?;
     let sandbox = state.sandbox();
     let dir = sandbox.resolve_dir(&q.path)?;
+    require_visible_at(&session, &state, &dir)?;
     let rel = sandbox.relative(&dir).unwrap_or_default();
-    let sb = sandbox.clone();
-    let mut entries = tokio::task::spawn_blocking(move || list_dir(&sb, &dir)).await.map_err(ApiError::internal)??;
-    if !session.is_host() {
-        entries.retain(|e| !is_chat_folder(&e.path));
-    }
+    let (sb, st) = (sandbox.clone(), state.clone());
+    let hide_chat = !session.is_host();
+    let entries = tokio::task::spawn_blocking(move || {
+        let mut entries = list_dir(&sb, &dir)?;
+        if hide_chat {
+            entries.retain(|e| !leads_into_chat_folder(&st, &sb, e));
+        }
+        std::io::Result::Ok(entries)
+    })
+    .await
+    .map_err(ApiError::internal)??;
     Ok(Json(DirListing { path: rel, entries, can_write: session.can_write() }))
 }
 
 pub async fn download(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>, req: Request) -> ApiResult<Response> {
     require_visible(&session, &q.path)?;
-    let path = state.sandbox().resolve_file(&q.path)?;
+    let sandbox = state.sandbox();
+    let path = sandbox.resolve_file(&q.path)?;
+    require_visible_at(&session, &state, &path)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
     let (parts, _) = req.into_parts();
     Ok(serve_path(&state, &session, &path, &name, q.inline == Some(1), &parts).await)
@@ -156,7 +184,9 @@ async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, body: 
     require_visible(session, &q.dir)?;
     let sandbox = state.sandbox();
     let dir = sandbox.resolve_dir(&q.dir)?;
+    require_visible_at(session, state, &dir)?;
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
+    require_unreserved(session, &sandbox, &dir, &name)?;
     let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
     let (path, _) = receive_upload(state, session, body, &dir, &name).await?;
     let entry = entry_for(&sandbox, &path).ok_or_else(|| ApiError::internal("uploaded file vanished"))?;
@@ -176,7 +206,9 @@ pub async fn mkdir(State(state): State<Shared>, Extension(session): Extension<Se
     require_visible(&session, &b.dir)?;
     let sandbox = state.sandbox();
     let dir = sandbox.resolve_dir(&b.dir)?;
+    require_visible_at(&session, &state, &dir)?;
     let name = sanitize_filename(&b.name).ok_or_else(|| ApiError::bad_request("名称无效"))?;
+    require_unreserved(&session, &sandbox, &dir, &name)?;
     let target = dir.join(&name);
     if std::fs::symlink_metadata(&target).is_ok() {
         return Err(ApiError::conflict("已存在同名的文件或文件夹"));
@@ -199,10 +231,11 @@ pub async fn rename(State(state): State<Shared>, Extension(session): Extension<S
     // resolve_entry: renaming a symlink renames the link, not its target.
     let src = sandbox.resolve_entry(&b.path)?;
     let parent = src.parent().ok_or_else(|| ApiError::bad_request("路径无效"))?.to_path_buf();
+    // The item itself too: a phone may not rename a chat folder away.
+    require_visible_at(&session, &state, &src)?;
+    require_visible_at(&session, &state, &parent)?;
     let name = sanitize_filename(&b.name).ok_or_else(|| ApiError::bad_request("名称无效"))?;
-    if !session.is_host() && parent == sandbox.root() && matches!(name.as_str(), INBOX_DIR | SENT_DIR) {
-        return Err(ApiError::conflict("这个名称留给聊天文件夹使用"));
-    }
+    require_unreserved(&session, &sandbox, &parent, &name)?;
     let dst = parent.join(&name);
     // Allow case-only renames on case-insensitive disks (same file).
     let same_file = src.file_name().map(|n| n.to_string_lossy().to_lowercase()) == Some(name.to_lowercase())
@@ -249,6 +282,15 @@ pub fn move_to_trash(path: &FsPath) -> Result<(), trash::Error> {
     ctx.delete(path)
 }
 
+/// The trash crate's messages quote the path; keep only what kind of failure it was.
+fn trash_failure(e: &trash::Error) -> String {
+    match e {
+        trash::Error::Os { code, .. } => format!("os error {code}"),
+        trash::Error::TargetedRoot => "targeted a root".into(),
+        _ => "other".into(),
+    }
+}
+
 pub async fn delete(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<DeleteBody>) -> ApiResult<Json<Value>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
@@ -258,6 +300,10 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
         crate::core::paths::PathError::Invalid if segments(&b.path).is_ok_and(|s| s.is_empty()) => ApiError::bad_request("不能删除共享文件夹本身"),
         other => other.into(),
     })?;
+    require_visible_at(&session, &state, &target)?;
+    if let Some(parent) = target.parent() {
+        require_visible_at(&session, &state, parent)?;
+    }
     let parent_rel = target.parent().and_then(|p| sandbox.relative(p)).unwrap_or_default();
     #[cfg(windows)]
     if !has_recycle_bin(&target) {
@@ -269,7 +315,7 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
         .await
         .map_err(ApiError::internal)?
         .map_err(|_| ApiError::internal("trash thread panicked"))?
-        .map_err(|e| ApiError::internal(format!("move to trash failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("move to trash failed ({})", trash_failure(&e))))?;
     state.emit_files_changed(&parent_rel);
     Ok(Json(json!({ "ok": true })))
 }

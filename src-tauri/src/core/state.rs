@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde_json::json;
@@ -18,9 +18,16 @@ use super::model::{Address, FileRef, MessageOut};
 use super::pairing::Pairing;
 use super::paths::Sandbox;
 use super::tls::Tls;
+use super::util::now_ms;
 
 pub const INBOX_DIR: &str = "收件箱";
 pub const SENT_DIR: &str = "已发送";
+
+/// 收件箱 / 已发送 and everything under them: chat attachments of every
+/// conversation, which only the host may browse.
+pub fn is_chat_path(rel: &str) -> bool {
+    matches!(super::paths::segments(rel).ok().and_then(|s| s.first().copied()), Some(INBOX_DIR | SENT_DIR))
+}
 
 pub struct AppState {
     pub db: Db,
@@ -48,6 +55,16 @@ pub struct AppState {
     revoked: Mutex<HashSet<String>>,
     /// Watches the shared folder so changes made in Finder reach the clients.
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// Chat folders of shared folders used before (attachments remember
+    /// their root): they stay host-only even inside a new shared folder.
+    old_chat_dirs: RwLock<Vec<PathBuf>>,
+    /// Cutoff (ms) of the last automatic cleanup or clear. Each new event
+    /// stream starts with it, so clients that were offline drop those messages too.
+    pruned_before: AtomicI64,
+}
+
+fn chat_dirs_of(root: &Path) -> [PathBuf; 2] {
+    [root.join(INBOX_DIR), root.join(SENT_DIR)]
 }
 
 pub type Shared = Arc<AppState>;
@@ -70,6 +87,8 @@ pub struct StateParts {
 impl AppState {
     pub fn new(p: StateParts) -> Shared {
         let (events, _) = broadcast::channel(512);
+        let paused = p.config.paused;
+        let old_chat_dirs = p.db.attachment_roots().unwrap_or_default().iter().flat_map(|r| chat_dirs_of(Path::new(r))).collect();
         Arc::new(AppState {
             db: p.db,
             data_dir: p.data_dir,
@@ -79,7 +98,7 @@ impl AppState {
             events,
             pairing: Mutex::new(Pairing::default()),
             presence: Mutex::new(HashMap::new()),
-            paused: AtomicBool::new(false),
+            paused: AtomicBool::new(paused),
             local_token: p.local_token,
             local_port: p.local_port,
             lan_port: p.lan_port,
@@ -91,7 +110,15 @@ impl AppState {
             upload_lock: tokio::sync::Mutex::new(()),
             revoked: Mutex::new(HashSet::new()),
             watcher: Mutex::new(None),
+            old_chat_dirs: RwLock::new(old_chat_dirs),
+            pruned_before: AtomicI64::new(0),
         })
+    }
+
+    /// Whether `abs` (a resolved path) is in a chat folder of the current
+    /// shared folder or of one used before.
+    pub fn is_chat_location(&self, abs: &Path) -> bool {
+        self.sandbox().relative(abs).is_some_and(|rel| is_chat_path(&rel)) || self.old_chat_dirs.read().unwrap().iter().any(|d| abs.starts_with(d))
     }
 
     /// Marks a removed device so transfers it already started are cut off.
@@ -123,7 +150,8 @@ impl AppState {
     }
 
     pub fn set_sandbox(&self, sb: Sandbox) {
-        *self.sandbox.write().unwrap() = sb;
+        let previous = std::mem::replace(&mut *self.sandbox.write().unwrap(), sb);
+        self.old_chat_dirs.write().unwrap().extend(chat_dirs_of(previous.root()));
     }
 
     pub fn emit(&self, audience: Audience, name: &'static str, data: &impl serde::Serialize) {
@@ -131,8 +159,24 @@ impl AppState {
         let _ = self.events.send(ServerEvent::new(audience, name, data));
     }
 
+    /// Changes inside the chat folders go to the host only, so phones cannot
+    /// tell when another conversation received a file.
     pub fn emit_files_changed(&self, dir: &str) {
-        self.emit(Audience::Everyone, "files", &json!({ "dir": dir }));
+        self.emit_files_event(dir, is_chat_path(dir));
+    }
+
+    pub fn emit_files_event(&self, dir: &str, host_only: bool) {
+        let audience = if host_only { Audience::Host } else { Audience::Everyone };
+        self.emit(audience, "files", &json!({ "dir": dir }));
+    }
+
+    pub fn pruned_before(&self) -> i64 {
+        self.pruned_before.load(Ordering::SeqCst)
+    }
+
+    /// Records that messages created before `before` (ms) no longer exist.
+    pub fn mark_pruned(&self, before: i64) {
+        self.pruned_before.fetch_max(before, Ordering::SeqCst);
     }
 
     pub fn is_paused(&self) -> bool {
@@ -141,7 +185,48 @@ impl AppState {
 
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::SeqCst);
+        {
+            let mut cfg = self.config.lock().unwrap();
+            if cfg.paused != paused {
+                cfg.paused = paused;
+                if let Err(e) = cfg.save(&self.data_dir) {
+                    tracing::warn!("could not save the pause setting: {e}");
+                }
+            }
+        }
         self.emit(Audience::Everyone, "paused", &json!({ "paused": paused }));
+    }
+
+    pub fn chat_retention_days(&self) -> u32 {
+        self.config.lock().unwrap().chat_retention_days
+    }
+
+    /// Changes the setting only once it is saved, so Settings and the
+    /// cleanup task never disagree.
+    pub fn set_chat_retention_days(&self, days: u32) -> std::io::Result<()> {
+        let mut cfg = self.config.lock().unwrap();
+        let mut next = cfg.clone();
+        next.chat_retention_days = days;
+        next.save(&self.data_dir)?;
+        *cfg = next;
+        Ok(())
+    }
+
+    /// Deletes chat messages older than the retention setting and tells open
+    /// conversations to drop them. Returns how many were deleted.
+    pub fn prune_old_messages(&self) -> anyhow::Result<usize> {
+        let days = self.chat_retention_days();
+        if days == 0 {
+            return Ok(0);
+        }
+        let before = now_ms() - i64::from(days) * 86_400_000;
+        let n = self.db.delete_messages_before(before)?;
+        self.mark_pruned(before);
+        if n > 0 {
+            self.emit(Audience::Everyone, "pruned", &json!({ "before": before }));
+            self.emit(Audience::Host, "devices", &json!({}));
+        }
+        Ok(n)
     }
 
     pub fn addresses(&self) -> Vec<Address> {

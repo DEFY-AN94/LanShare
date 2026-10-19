@@ -12,7 +12,6 @@ use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder,
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
-use tracing_subscriber::EnvFilter;
 
 use crate::core::bridge::HostBridge;
 use crate::core::state::Shared;
@@ -24,8 +23,7 @@ const MENU_PAUSE: &str = "pause";
 const MENU_QUIT: &str = "quit";
 
 pub fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,lanshare_lib=debug"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    crate::core::logging::init();
 }
 
 fn show_main_window(app: &AppHandle) {

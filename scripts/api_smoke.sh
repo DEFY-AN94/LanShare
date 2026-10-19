@@ -114,7 +114,10 @@ curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/x.html" "$PHONE/api/fil
 HDR=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.html&inline=1")
 contains "html served as text/plain" "$HDR" 'content-type: text/plain; charset=utf-8'
 contains "inline files sandboxed" "$HDR" 'content-security-policy: sandbox'
-SVG=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.html&inline=1")
+printf '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>' > "$T/x.svg"
+curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/x.svg" "$PHONE/api/files/upload?dir=&name=x.svg"
+SVG=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.svg&inline=1")
+contains "svg is only offered as a download" "$SVG" 'content-disposition: attachment'
 PAGE=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/")
 contains "page has CSP" "$PAGE" "content-security-policy: default-src 'self'"
 contains "page denies framing" "$PAGE" 'x-frame-options: DENY'

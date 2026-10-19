@@ -117,7 +117,9 @@ impl Sandbox {
         let (last, parents) = segs.split_last().ok_or(PathError::Invalid)?;
         let parent = std::fs::canonicalize(self.resolve_dir(&parents.join("/"))?)?;
         let entry = parent.join(last);
-        std::fs::symlink_metadata(&entry)?;
+        // A real file or folder is checked under its on-disk name, so a
+        // Windows 8.3 alias (`XXXX~1`) cannot stand in for a protected name.
+        let entry = if std::fs::symlink_metadata(&entry)?.file_type().is_symlink() { entry } else { std::fs::canonicalize(&entry)? };
         self.check(&entry)?;
         Ok(friendly(&entry))
     }

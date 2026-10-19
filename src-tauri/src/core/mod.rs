@@ -7,6 +7,7 @@ pub mod db;
 pub mod error;
 pub mod events;
 mod guard;
+pub mod logging;
 pub mod model;
 pub mod net;
 pub mod pairing;
@@ -114,7 +115,7 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
     let usable = if configured == default {
         None
     } else if let Some(reason) = unsafe_root_reason(&configured, home, data_dir) {
-        tracing::warn!("shared folder {} is not allowed ({reason}); using {}", configured.display(), default.display());
+        tracing::warn!("the configured shared folder is not allowed ({reason}); using the default folder");
         None
     } else {
         match Sandbox::existing(&configured) {
@@ -123,13 +124,13 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
             Err(_) if configured.is_absolute() && configured.parent().is_some_and(|p| p.is_dir()) => match Sandbox::new(&configured) {
                 Ok(sb) => Some(sb),
                 Err(e) => {
-                    tracing::warn!("cannot create shared folder {} ({e}); using {} for now", configured.display(), default.display());
+                    tracing::warn!("cannot create the configured shared folder ({e}); using the default folder for now");
                     None
                 }
             },
             Err(e) => {
                 // e.g. an unplugged drive. Not saved over: the folder comes back once it is reconnected.
-                tracing::warn!("shared folder {} is unavailable ({e}); using {} for now", configured.display(), default.display());
+                tracing::warn!("the configured shared folder is unavailable ({e}); using the default folder for now");
                 None
             }
         }
@@ -150,6 +151,7 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
 /// Starts both listeners. Must run inside a tokio runtime.
 pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<ServerHandle> {
     std::fs::create_dir_all(&opts.data_dir).with_context(|| format!("create {}", opts.data_dir.display()))?;
+    logging::start_file(&opts.data_dir);
     guard::raise_fd_limit();
     let mut config = Config::load_or_default(&opts.data_dir, &opts.home_dir);
     if let Some(root) = opts.shared_root {
@@ -222,6 +224,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     });
 
     tokio::spawn(watch_network(state.clone()));
+    tokio::spawn(prune_messages(state.clone()));
     watch_shared_folder(&state);
     let root = state.sandbox().root().to_path_buf();
     tokio::task::spawn_blocking(move || transfer::sweep_tree(&root, 4));
@@ -245,7 +248,8 @@ pub fn watch_shared_folder(state: &Shared) {
     let watcher = match watcher {
         Ok(w) => w,
         Err(e) => {
-            tracing::warn!("cannot watch shared folder: {e}");
+            // notify's message lists the paths involved; log only the kind.
+            tracing::warn!("cannot watch the shared folder: {:?}", e.kind);
             return;
         }
     };
@@ -261,18 +265,42 @@ pub fn watch_shared_folder(state: &Shared) {
                 changed.push(p);
             }
             let sandbox = st.sandbox();
-            let mut dirs: Vec<String> = changed
+            let mut targets: Vec<(String, bool)> = changed
                 .iter()
                 .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
-                .filter_map(|p| p.parent().and_then(|d| sandbox.relative(d)))
+                .filter_map(|p| change_target(&st, &sandbox, p))
                 .collect();
-            dirs.sort();
-            dirs.dedup();
-            for dir in dirs {
-                st.emit_files_changed(&dir);
+            targets.sort();
+            targets.dedup();
+            for (dir, host_only) in targets {
+                st.emit_files_event(&dir, host_only);
             }
         }
     });
+}
+
+/// Which listing a change on disk refreshes, and whether only the host may
+/// hear about it: a change to a chat folder itself, or to anything in one,
+/// tells phones that a conversation received a file.
+fn change_target(state: &AppState, sandbox: &Sandbox, changed: &std::path::Path) -> Option<(String, bool)> {
+    let dir = sandbox.relative(changed.parent()?)?;
+    let host_only = state::is_chat_path(&dir) || state.is_chat_location(changed);
+    Some((dir, host_only))
+}
+
+/// Automatic chat cleanup: at startup, then every 6 hours. Changing the
+/// setting in Settings runs it at once as well.
+async fn prune_messages(state: Shared) {
+    let mut tick = tokio::time::interval(Duration::from_secs(6 * 3600));
+    loop {
+        tick.tick().await;
+        let st = state.clone();
+        match tokio::task::spawn_blocking(move || st.prune_old_messages()).await {
+            Ok(Ok(n)) if n > 0 => tracing::info!("automatic cleanup deleted {n} old chat messages"),
+            Ok(Err(e)) => tracing::error!("automatic chat cleanup failed: {e:#}"),
+            _ => {}
+        }
+    }
 }
 
 /// Follows Wi-Fi changes and renames of the computer (address list +

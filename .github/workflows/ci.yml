@@ -23,8 +23,8 @@ jobs:
       # The runner context is not available at job level; derive it from the matrix.
       PYTHON: ${{ startsWith(matrix.os, 'windows') && 'python' || 'python3' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -59,8 +59,8 @@ jobs:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -71,8 +71,58 @@ jobs:
           key: release
       - run: npm ci
       - run: npx tauri build --bundles nsis
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: LanShare-windows-x64
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+  windows-install-check:
+    name: Windows install check
+    needs: windows-installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: LanShare-windows-x64
+          path: installer
+      - name: Install silently, check the firewall rule, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'installer not found in the artifact' }
+          Start-Process -Wait -FilePath $setup.FullName -ArgumentList '/S'
+
+          $rule = Get-NetFirewallRule -DisplayName 'LanShare' -ErrorAction SilentlyContinue
+          if (-not $rule) { throw 'the installer did not add the firewall rule' }
+          $app = ($rule | Get-NetFirewallApplicationFilter).Program
+          $remote = ($rule | Get-NetFirewallAddressFilter).RemoteAddress
+          $protocol = ($rule | Get-NetFirewallPortFilter).Protocol
+          "rule: enabled=$($rule.Enabled) direction=$($rule.Direction) action=$($rule.Action) profile=$($rule.Profile) remote=$remote protocol=$protocol program=$app"
+          if ("$($rule.Enabled)" -ne 'True' -or "$($rule.Direction)" -ne 'Inbound' -or "$($rule.Action)" -ne 'Allow') { throw 'the rule is not an enabled inbound allow rule' }
+          if ("$($rule.Profile)" -ne 'Private') { throw "the rule applies to '$($rule.Profile)', expected Private only" }
+          if ("$remote" -ne 'LocalSubnet') { throw "the rule allows '$remote', expected LocalSubnet" }
+          if ("$protocol" -ne 'TCP') { throw "the rule protocol is '$protocol', expected TCP" }
+          if (-not $app.StartsWith("$env:ProgramFiles\", [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path $app)) { throw "the rule's program '$app' is not an installed exe under Program Files" }
+          $installDir = Split-Path $app
+
+          # A hosted runner may not let a GUI app start, so a silent server is only a warning.
+          Start-Process -FilePath $app
+          $up = $false
+          for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+            Start-Sleep -Seconds 1
+            & curl.exe -sk --max-time 2 -o NUL https://127.0.0.1:39210/api/ca
+            $up = ($LASTEXITCODE -eq 0)
+          }
+          if ($up) { 'the installed app answers on port 39210' } else { '::warning::the installed app did not answer on port 39210' }
+          Stop-Process -Name ([IO.Path]::GetFileNameWithoutExtension($app)) -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
+          # With _?= the uninstaller runs in place instead of relaunching from %TEMP%, so -Wait really waits.
+          Start-Process -Wait -FilePath (Join-Path $installDir 'uninstall.exe') -ArgumentList '/S', "_?=$installDir"
+          if (Get-NetFirewallRule -DisplayName 'LanShare' -ErrorAction SilentlyContinue) { throw 'the uninstaller left the firewall rule behind' }
+          if (Test-Path $app) { throw 'the uninstaller left the app behind' }
+          'install and uninstall checks passed'
+          # A failed curl probe above leaves a non-zero exit code behind; every real failure has thrown already.
+          exit 0

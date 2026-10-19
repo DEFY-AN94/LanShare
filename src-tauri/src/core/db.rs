@@ -120,7 +120,9 @@ impl Db {
     }
 
     fn init(conn: Connection) -> Result<Db> {
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+        // secure_delete overwrites deleted rows with zeros, so cleared chats
+        // cannot be read back out of the database file.
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
         conn.execute_batch(SCHEMA)?;
         // Databases created before attachments remembered their root.
         let has_root: i64 =
@@ -128,11 +130,30 @@ impl Db {
         if has_root == 0 {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN file_root TEXT;")?;
         }
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 1 {
+            // Builds before secure_delete left deleted text in free pages:
+            // rewrite the file once.
+            conn.execute_batch("VACUUM;")?;
+            Self::purge(&conn);
+            conn.execute_batch("PRAGMA user_version = 1;")?;
+        }
         Ok(Db { conn: Mutex::new(conn) })
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Runs after every delete. In WAL mode older copies of a page stay in the
+    /// -wal file until a checkpoint; TRUNCATE copies the zeroed pages into the
+    /// database and empties the -wal file, so deleted text is gone from both.
+    /// Best effort: the delete itself has already been committed, and the
+    /// next purge (or SQLite's own checkpoint) finishes the job.
+    fn purge(conn: &Connection) {
+        if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
+            tracing::warn!("could not compact the database after a delete: {e}");
+        }
     }
 
     // ---- devices ----
@@ -186,7 +207,12 @@ impl Db {
 
     /// Deletes the device and (via ON DELETE CASCADE) its messages.
     pub fn delete_device(&self, id: &str) -> Result<bool> {
-        Ok(self.conn().execute("DELETE FROM devices WHERE id = ?1", params![id])? > 0)
+        let conn = self.conn();
+        let deleted = conn.execute("DELETE FROM devices WHERE id = ?1", params![id])? > 0;
+        if deleted {
+            Self::purge(&conn);
+        }
+        Ok(deleted)
     }
 
     // ---- messages ----
@@ -287,7 +313,28 @@ impl Db {
     }
 
     pub fn clear_messages(&self) -> Result<usize> {
-        Ok(self.conn().execute("DELETE FROM messages", [])?)
+        let conn = self.conn();
+        let n = conn.execute("DELETE FROM messages", [])?;
+        Self::purge(&conn);
+        Ok(n)
+    }
+
+    /// Deletes messages created before `before` (ms); used by automatic cleanup.
+    pub fn delete_messages_before(&self, before: i64) -> Result<usize> {
+        let conn = self.conn();
+        let n = conn.execute("DELETE FROM messages WHERE created_at < ?1", params![before])?;
+        if n > 0 {
+            Self::purge(&conn);
+        }
+        Ok(n)
+    }
+
+    /// Shared-folder roots that chat attachments were saved under.
+    pub fn attachment_roots(&self) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT DISTINCT file_root FROM messages WHERE file_root IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
     }
 }
 
@@ -355,6 +402,66 @@ mod tests {
         assert!(more);
         assert!(db.delete_device("d1").unwrap());
         assert!(db.message(1).unwrap().is_none());
+    }
+
+    /// Deleted text must be in neither the database file nor its -wal file,
+    /// whether it had already been checkpointed or still sat in the WAL.
+    #[test]
+    fn deleted_text_is_gone_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lanshare.db");
+        let on_disk = |marker: &str| {
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes.extend(std::fs::read(dir.path().join("lanshare.db-wal")).unwrap_or_default());
+            bytes.windows(marker.len()).any(|w| w == marker.as_bytes())
+        };
+        let db = Db::open(&path).unwrap();
+        device(&db, "d1");
+        device(&db, "d2");
+
+        let checkpointed = "MARKER-IN-MAIN-FILE";
+        db.insert_message(&text("d1", None, checkpointed)).unwrap();
+        Db::purge(&db.conn());
+        let in_wal = "MARKER-ONLY-IN-WAL";
+        db.insert_message(&text("d1", None, in_wal)).unwrap();
+        assert!(on_disk(checkpointed) && on_disk(in_wal), "markers should be on disk before the delete");
+        db.clear_messages().unwrap();
+        assert!(!on_disk(checkpointed) && !on_disk(in_wal));
+
+        let removed_device = "MARKER-REMOVED-DEVICE";
+        db.insert_message(&text("d2", None, removed_device)).unwrap();
+        assert!(db.delete_device("d2").unwrap());
+        assert!(!on_disk(removed_device));
+
+        let mut old = text("d1", None, "MARKER-OLD-MESSAGE");
+        old.created_at = 5;
+        db.insert_message(&old).unwrap();
+        db.insert_message(&text("d1", None, "kept")).unwrap();
+        assert_eq!(db.delete_messages_before(10).unwrap(), 1);
+        assert!(!on_disk("MARKER-OLD-MESSAGE") && on_disk("kept"));
+    }
+
+    /// A database from a build before secure_delete gets scrubbed once.
+    #[test]
+    fn upgrade_scrubs_text_deleted_by_older_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lanshare.db");
+        let marker = "MARKER-DELETED-BEFORE-UPGRADE";
+        let on_disk = || std::fs::read(&path).unwrap().windows(marker.len()).any(|w| w == marker.as_bytes());
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+            old.execute_batch(SCHEMA).unwrap();
+            old.execute("INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d1', 'iPhone', 'h', 1)", []).unwrap();
+            old.execute("INSERT INTO messages (device_id, from_host, kind, text, created_at) VALUES ('d1', 0, 'text', ?1, 1)", params![marker]).unwrap();
+            old.execute("DELETE FROM messages", []).unwrap();
+            old.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())).unwrap();
+        }
+        assert!(on_disk(), "without secure_delete the text stays in the file");
+        let db = Db::open(&path).unwrap();
+        assert!(!on_disk());
+        assert_eq!(db.conn().query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert!(db.device("d1").unwrap().is_some(), "the data itself is kept");
     }
 
     #[test]

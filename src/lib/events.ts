@@ -6,7 +6,7 @@ export type ConnState = "connecting" | "open" | "offline" | "unauthorized" | "pa
 
 type Handler = (data: unknown) => void;
 
-const EVENT_NAMES = ["msg", "files", "devices", "pairing", "pairing_done", "revoked", "paused", "cleared", "network", "resync"] as const;
+const EVENT_NAMES = ["msg", "files", "devices", "pairing", "pairing_done", "revoked", "paused", "cleared", "pruned", "network", "resync"] as const;
 
 class EventHub {
   private es: EventSource | null = null;

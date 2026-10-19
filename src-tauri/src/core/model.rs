@@ -112,4 +112,8 @@ pub struct HostOverview {
     pub paused: bool,
     pub version: String,
     pub network_warning: Option<String>,
+    /// Automatic chat cleanup: messages older than this many days are deleted; 0 = off.
+    pub chat_retention_days: u32,
+    /// Debug-level logging is on (it resets when LanShare restarts).
+    pub verbose_logging: bool,
 }
