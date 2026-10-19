@@ -2,7 +2,7 @@
 
 > A messaging and file-transfer tool for iPhone ↔ computer (macOS / Windows) on the local network. LAN only; nothing goes through any cloud.
 >
-> Document date: 2026-10-20 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); the installer still needs testing on Windows, in the VM (M6.1 Part B); next: M6.1 → M9, planned 2026-10-20 (see section 12) · "LanShare" is a working name and can be changed
+> Document date: 2026-10-20 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 built and in review (PR #4); next: M7 → M9, planned 2026-10-20 (see section 12) · "LanShare" is a working name and can be changed
 
 ## 1. Goals and scope
 
@@ -44,11 +44,11 @@
 | Desktop tech stack | Tauri 2: Rust core + web UI (React + TypeScript) | The desktop window and the phone web page share one UI codebase; small installer (on the order of 10 MB) |
 | Real-time channel | SSE (server push) + plain HTTPS requests | Tested and works; more reliable than WebSocket: WebSocket on older iOS has known issues with self-signed certificates |
 | Phone client | iPhone only, as a Safari web page | No paid developer account yet; apps installed with a free account expire after 7 days |
-| Windows version | GitHub Actions builds the packages automatically; test in a Windows VM on the Mac | No Windows computer at hand |
+| Windows version | GitHub Actions builds and tests the packages automatically; hands-on testing waits for a Windows PC (changed 2026-10-20) | No Windows computer at hand |
 | Native app | Long term; an Australian developer account is an option | Feasible; see section 11 |
 | Development order (changed 2026-10-15) | Start with local Git and build the Mac version first; GitHub Actions and the Windows version come after you create the GitHub repository | The GitHub repository will be created later |
-| Roadmap after M6 (2026-10-20) | M6.1 → M7 → M8 → M9 (section 12), each accepted on real devices in one sitting | Finish Windows and fix gaps in what LanShare already promises before adding features; the new auth path in M9 comes after the multi-device tests in M6.1 |
-| Windows testing (2026-10-20) | A Windows 11 ARM virtual machine (UTM) on the Mac, about 40–60 GB of disk | No Windows PC at hand |
+| Roadmap after M6 (2026-10-20) | M6.1 → M7 → M8 → M9 (section 12); a milestone that needs real devices is accepted on them in one sitting, and hands-on Windows checks wait for the "Windows testing, later" list | Fix gaps in what LanShare already promises before adding features; the new auth path in M9 comes after the multi-device tests in M6.1 |
+| Windows testing (changed 2026-10-20) | No VM. Keep building Windows features and let CI build and test them; once a Windows PC is available, run the "Windows testing, later" list in section 12 in one pass | One combined check on real hardware instead of a VM |
 | Pause across restarts (2026-10-20) | If sharing was paused, it stays paused after LanShare restarts, and the phone and Settings show it clearly | Once launch at login exists, a forgotten pause should not quietly turn itself off |
 | Automatic chat cleanup (2026-10-20) | Build it in M6.1: off / 30 days / 90 days | Section 7.2 already promises it |
 | Unsent text on the phone (2026-10-20) | Drafts and queued (not yet delivered) messages may be kept in Safari's local storage on the phone; they are deleted once sent and on unpairing | iOS often reloads Home Screen apps after you switch away; this is only your own unsent text, on your own phone |
@@ -98,8 +98,8 @@ Ran a test server with a self-signed certificate and tested each item in the Sim
 - **Packaging**: the official `tauri-apps/tauri-action@v1` builds on a GitHub-hosted Windows machine (`windows-latest`) and produces `.msi` / `.exe` installers. They can simply be downloaded as build artifacts; there is no need to publish a Release.
 - **Cost**: private repositories get 2,000 free minutes per month; Windows machines cost more per minute than Linux, so the quota runs out faster. A cold Rust build takes about 10–20 minutes, which is enough for a personal project. **With no payment method attached, nothing is charged**; when the quota runs out, runs just pause. Public repositories are completely free.
 - **Testing**:
-  1. Automated tests: every push runs Rust unit tests and API tests on Windows (path rules, file reads and writes, API)
-  2. Manual tests: install a Windows 11 ARM VM on this Mac (UTM free / VMware Fusion free / Parallels paid), install the package CI builds and use it for real. The x64 installer runs under emulation on Windows on ARM; CI can also build an extra ARM64 version
+  1. Automated tests: every push to `main` and every PR runs the Rust unit tests and API tests on Windows (path rules, file reads and writes, API) and builds the installer; from M6.1, CI also installs and uninstalls it silently and checks the firewall rule
+  2. Manual tests (changed 2026-10-20: no VM): once a Windows PC is available, install the package CI builds and use it for real, following the "Windows testing, later" list in section 12. If that PC runs Windows on ARM, the x64 installer runs under emulation (an ARM64 build is on the backlog)
 - **Code signing**: without a signature, Windows shows "Windows protected your PC" on first run; click "More info → Run anyway". Fine for personal use; buy code signing later if it becomes necessary.
 
 ### 4.3 Native app and an Australian developer account
@@ -265,8 +265,9 @@ SSE events:
 
 - The app data directory (`~/Library/Application Support/<id>/` on macOS, `%APPDATA%\<id>\` on Windows) contains:
   - `lanshare.db` (SQLite database)
-  - `config.json` (shared folder path, port)
+  - `config.json` (shared folder path, port, pause state, chat cleanup period)
   - `tls/` (certificates and private keys)
+  - `logs/` (the log file, rotated, at most about 10 MB; from M6.1)
 - Tables:
   - `devices`: id, name, credential hash, read/write permission, created time, last activity time
   - `messages`: id, conversation (device), direction (sent by the computer / sent by the device), client_id (for deduplication), type, text, attachment relative path / file name / size / type, time
@@ -325,7 +326,7 @@ A native app has limits too: the iPhone cannot receive real-time messages while 
 
 ## 12. Development milestones
 
-Each milestone has a result that can be verified in acceptance testing. Finish one before starting the next. The one exception: M7 can start once M6.1 Part A is merged.
+Each milestone has a result that can be verified in acceptance testing. Finish one before starting the next. The exception is hands-on Windows testing: those checks are collected in the "Windows testing, later" list below and done in one pass on a Windows PC, so M6 stays open while the later milestones go ahead.
 
 **M0 Environment and real-device check**
 
@@ -370,7 +371,7 @@ Each milestone has a result that can be verified in acceptance testing. Finish o
 
 - Prerequisite: start only after you create the GitHub repository and give me its URL (finish the Mac version before that)
 - Windows adaptation: path rules, Recycle Bin, firewall prompt, tray, allow only one running instance
-- Status: merged into `main` through PR #1 (2026-10-15). CI on Windows passes clippy, all Rust tests and the API end-to-end test, and builds the installer. **Not accepted yet: the installer has not been run on Windows; acceptance is M6.1 Part B, in the VM.**
+- Status: merged into `main` through PR #1 (2026-10-15). CI on Windows passes clippy, all Rust tests and the API end-to-end test, and builds the installer. **Not accepted yet: the installer has not been run on Windows; that happens with the other Windows checks once a Windows PC is available.**
 - Done (2026-10-15; the code is on GitHub at DEFY-AN94/LanShare):
   - The installer (NSIS, installs to Program Files) adds a firewall rule automatically: it allows only Private networks and the local subnet; uninstalling removes it
   - At runtime, detect when Windows is set to "Public network", and prompt on the Settings page and in the Add device window to switch it to a Private network
@@ -380,16 +381,10 @@ Each milestone has a result that can be verified in acceptance testing. Finish o
   - All `cfg(windows)` code (hidden attribute, Zone.Identifier, long paths, UNC paths) compiles in CI, and all Rust tests pass on Windows
   - CI: on Windows, run clippy, all Rust tests and the API end-to-end test, and build the Windows installer; the end-to-end test fails the job when any check fails (macOS tests run only on PRs)
 - GitHub Actions: on every push to `main` and on every PR, run the tests and package the NSIS `.exe` installer as the build artifact `LanShare-windows-x64`
-- Still to test on a real Windows PC (or the VM):
-  - Install and uninstall: the SmartScreen and administrator prompts; the firewall rule is added (Private networks and the local subnet only) and removed again
-  - The "Public network" warning on the Settings page and in the Add device window
-  - Delete refusal on USB flash drives / network shares
-  - With a full-tunnel VPN connected, the QR code still shows the LAN address
-  - The app window, tray icon and notifications; files from the phone get Zone.Identifier
-- Install and test in a Windows 11 ARM virtual machine on the Mac
-- Acceptance: Actions produces the installer; after installing on Windows, it can complete pairing and transfers with an iPhone
+- Still to test on a real Windows PC: see "Windows testing, later" in section 12
+- Acceptance: Actions produces the installer (done); installing it on Windows and completing pairing and transfers with an iPhone are in "Windows testing, later"
 
-**Before M6.1: 15-minute iPhone check (no code)**
+**15-minute iPhone check** (no code; any time before M9)
 
 A test page and a one-action Shortcut, run on the real iPhone with the LanShare certificate trusted. Each answer decides part of the plan:
 
@@ -398,36 +393,24 @@ A test page and a one-action Shortcut, run on the real iPhone with the LanShare 
 3. `<input type="file" webkitdirectory>` lets you pick a whole folder (WebKit fixed this for iOS 18.4) → whether folder upload goes on the backlog
 4. The system share sheet that **存储到相册** (Save to Photos) opens already offers Copy and WeChat → whether a separate "copy image" button is needed
 
-**M6.1 Finish Windows; fix gaps in what LanShare already promises** (about 1.5 weeks)
+**M6.1 Fix gaps in what LanShare already promises** (about 1 week)
 
-Part A (no VM needed):
-
+- Status: built 2026-10-20, in review as PR #4
 - Log file for installed builds. Today release builds keep no logs: tracing goes to stdout only (`lib.rs`), and Windows release builds have no console. Write a size-capped log to `<data dir>/logs`, switched on once the data directory is known. Settings gets **打开日志文件夹** (Open log folder) and a **详细日志** (Verbose logging) switch that resets on restart. Logs never contain message text or file names: scrub the current lines that log paths (`error.rs`, `host.rs`, `mod.rs`) and the headless bridge's notification line, which logs message text and file names (`bridge.rs`; the API tests and the smoke test use that bridge), and a test checks that marker strings never reach the log
 - Deleted chat text is really gone. SQLite's `secure_delete` is off (`db.rs` sets only WAL, foreign keys and the busy timeout), so cleared text stays readable in `lanshare.db` and its WAL file. Turn it on, and run one purge step (`PRAGMA wal_checkpoint(TRUNCATE)`; a plain checkpoint leaves old frames in the WAL file) after every delete path: clearing chats, removing a device, unpairing from the phone, and the single-message delete in M7
-- Automatic chat cleanup (section 3): a Settings choice of off / 30 days / 90 days, run daily through the same purge step
+- Automatic chat cleanup (section 3): a Settings choice of off / 30 days / 90 days, run at startup, every 6 hours and whenever the setting changes, through the same purge step
 - Close the chat-folder isolation gaps. The 收件箱 / 已发送 check looks at the requested path, while file lookups follow symbolic links, so a link that the computer's user creates to 收件箱 gets past it (`routes/files.rs`). Check the resolved path instead, and drop listed entries that resolve into a chat folder. `files` events about 收件箱 / 已发送 go to the host only (today every device gets them, `state.rs`)
 - Pause survives a restart (section 3): store it in `config.json`
 - Add Windows file types that run or mount to the reveal-only list for **用默认程序打开** (Open with default app) in `routes/host.rs`: `.chm`, `.msix` / `.appx` / `.appinstaller`, `.iso` / `.img` / `.vhd` / `.vhdx`, with table tests
 - Tests: a two-device test that proves devices cannot see each other's messages, attachments or events (every test pairs only one device today); revoking a device mid-upload gives 503 and leaves no `.part` file; fix the smoke test's SVG check, which downloads the HTML file again instead of an SVG
 - CI: a job that installs the NSIS build silently, checks the firewall rule (Private profile, local subnet, TCP, the exe in Program Files), starts the app and checks `/api/ca` if the runner allows it, stops the app, uninstalls (waiting for the uninstaller to finish, since it relaunches itself from `%TEMP%`) and checks that the rule is gone. Move GitHub Actions to their Node 24 versions (Node 20 is deprecated)
-
-Part B (Windows VM acceptance; this closes M6):
-
-- In the Windows 11 ARM VM, with bridged networking so the iPhone can reach it: go through the "Still to test" list under M6, pair the real iPhone, send text, a photo and a 1 GB file both ways, and install over the previous build (devices and chat history must be kept). Download the installer inside the VM so SmartScreen sees it as downloaded
-- Also check: **用默认程序打开** (Open with default app) on a phone-sent `.exe` / `.ps1` / `.lnk` / `.chm` shows it in File Explorer instead of running it (`.chm` is not on the reveal-only list in `routes/host.rs` today; Part A adds it). For two items already on M6's list: test the full-tunnel VPN with a WireGuard tunnel to a dummy peer (no VPN service needed), and the delete refusal on a network drive mapped from a share on the Mac (a USB stick is optional)
-- Possible false alarm: the Public-network warning fires when any network profile is Public (`net.rs`), so a VPN or Hyper-V adapter may cause a false warning
-- Record the results in section 4.2, in the same format as the 4.1.1 table
-
-M7 can start once Part A is merged; Part B is the gate that closes M6.
-
-- Needs from you: about an hour with the iPhone for Part B; approval of `tracing-appender` (a small logging crate from the tokio project)
+- Needs from you: no device session (the log file uses a small writer of LanShare's own, so `tracing-appender` is not needed)
 - Acceptance:
   - CI installs and uninstalls the NSIS build and checks the firewall rule both times; any failure fails the job; no Node 20 deprecation warnings
-  - The installed app on macOS and Windows writes `<data dir>/logs`, and **打开日志文件夹** shows it; a test proves message text and file names never reach the log
+  - The installed app on macOS writes `<data dir>/logs`, and **打开日志文件夹** shows it (on Windows, this is checked in "Windows testing, later"); a test proves message text and file names never reach the log
   - After clearing chats, removing a device or unpairing, a marker string is in neither `lanshare.db` nor its WAL file (test); messages older than the chosen cleanup period disappear
   - For a phone, a symbolic link to 收件箱 is not listed and its paths return 403, while the computer still sees it (test); a second phone gets no `files` events for 收件箱 / 已发送
   - Pause, quit and relaunch: LanShare starts paused, phones get 503, and the tray and Settings show it
-  - Part B: every item in M6's "Still to test" list and the extra checks above pass in the VM and are recorded in 4.2
 
 **M7 Daily iPhone use** (about 2 weeks)
 
@@ -452,36 +435,48 @@ M7 can start once Part A is merged; Part B is the gate that closes M6.
 
 **M8 Quick copy between the computer and the phone, both ways** (about 2 weeks)
 
-- Start with a half-day spike on the Mac: do notification buttons appear for an unsigned app in the default banner style (this may need `NSUserNotificationAlertStyle` in `Info.plist`), does a click from Notification Center still arrive after the banner is gone, and do threads pile up after 50 notifications. In the VM: does a click from Action Center reach the app
+- Start with a half-day spike on the Mac: do notification buttons appear for an unsigned app in the default banner style (this may need `NSUserNotificationAlertStyle` in `Info.plist`), does a click from Notification Center still arrive after the banner is gone, and do threads pile up after 50 notifications
 - Notifications you can act on: clicking opens that conversation; a **复制** (Copy) button copies the full text, not the 80-character preview; files get **打开** (Open), which only reveals risky file types; the Dock shows the unread count (on Windows, the tray tooltip); at most two notifications per device per burst; an option to hide message text in notifications
 - A fallback that always works: **复制最近收到的文字** (Copy latest received text) in the menu bar / tray menu
 - Send the computer's clipboard to the phone: a tray item, plus an optional global shortcut (none set by default). It goes to the most recent conversation, with a per-device submenu; a screenshot on the clipboard arrives as a PNG under 已发送. The clipboard is read only when you trigger it
-- Launch at login on Windows (Run key) and its cleanup on uninstall
-- Needs from you: approval of `tauri-plugin-global-shortcut`, `tauri-plugin-autostart` and a clipboard crate (which also brings in `image`; `png` is already in the tree through Tauri's menu and tray crates); decisions on the shortcut and the target device; about 30 minutes on the Mac and 15 in the VM
+- Launch at login on Windows (Run key) and its cleanup on uninstall (tested later on a Windows PC)
+- Needs from you: approval of `tauri-plugin-global-shortcut`, `tauri-plugin-autostart` and a clipboard crate (which also brings in `image`; `png` is already in the tree through Tauri's menu and tray crates); decisions on the shortcut and the target device; about 30 minutes on the Mac
 - Acceptance:
   - With the window hidden, clicking a phone message's notification opens that conversation
   - If the spike passes, **复制** on a 300-character message puts all 300 characters on the clipboard without opening the window; either way, the tray item copies it
   - Copy a URL on the Mac and use the tray item or the shortcut: it appears in the phone's chat without the window coming forward; an empty clipboard gives an error notification and sends nothing
   - If the OS refuses a shortcut registration, Settings shows the error and keeps the old shortcut (other apps' in-app shortcuts cannot be detected; Settings says so)
-  - In the VM, toast clicks, tray unread, launch at login and uninstall cleanup work, or the differences are recorded here
 
-**M9 Fixed address and iOS Shortcuts** (about 2 weeks; scope depends on the iPhone check before M6.1)
+**M9 Fixed address and iOS Shortcuts** (about 2 weeks; scope depends on the 15-minute iPhone check)
 
 - Connect by computer name (`mymac.local`). Add device also offers a `.local` QR code, with the IP one as a fallback; whether it becomes the default on macOS is decided when M9 starts, after the real-iPhone test passes. A Home Screen icon added from it survives IP changes. When a phone pairs again, the computer can choose **替换这台旧设备** (Replace this old device), so the device keeps its ID and chat history. The listener stays IPv4-only: Safari then falls back to IPv4 at once when `.local` also resolves to an IPv6 address
-- iOS Shortcuts, only if the check before M6.1 shows a Shortcut can reach LanShare. A send-only token per device can post messages and files but read nothing. One Shortcut in the share sheet sends text, links, photos and files; an optional second scope, off by default, lets a Shortcut copy the latest text from the computer. The illustrated Chinese recipe keeps the token in a file under On My iPhone (not iCloud Drive) and reads it at run time, so the Shortcut itself holds no secret and does not carry it through iCloud
+- iOS Shortcuts, only if the 15-minute iPhone check shows a Shortcut can reach LanShare. A send-only token per device can post messages and files but read nothing. One Shortcut in the share sheet sends text, links, photos and files; an optional second scope, off by default, lets a Shortcut copy the latest text from the computer. The illustrated Chinese recipe keeps the token in a file under On My iPhone (not iCloud Drive) and reads it at run time, so the Shortcut itself holds no secret and does not carry it through iCloud
 - Needs from you: about 45 minutes on the iPhone, including an IP change; decisions on making `.local` the default and on the Shortcuts details
 - Acceptance:
   - A real iPhone pairs through the `.local` QR code with no warning when the CA is trusted; after the Mac's IP changes, the Home Screen icon reconnects with its chat history
   - Replacing an old device keeps its ID and messages and invalidates the old credential; a phone cannot trigger a replacement (test)
   - A send-only token can post to `/api/messages` and `/api/messages/upload` and gets 401 / 403 everywhere else (tests); revoking it takes effect at once
   - On the real iPhone, a Safari URL, two photos and a PDF from Files shared through the Shortcut all arrive on the Mac
-  - In the Windows VM, the `.local` URL either works or is not offered
+
+**Windows testing, later** (decided 2026-10-20: no VM; one pass once a Windows PC is available; about 1.5 hours, with the iPhone)
+
+Windows features are still built, and CI builds and tests every change on Windows (from M6.1 it also installs and uninstalls the installer). Everything that needs a person at a Windows PC is collected here, and this pass also closes M6:
+
+- From M6: install and uninstall (SmartScreen and administrator prompts; the firewall rule is added for Private networks and the local subnet only, and removed again), the "Public network" warning on the Settings page and in the Add device window, delete refusal on USB flash drives and network shares (a network drive mapped from a share on the Mac works too), the QR address with a full-tunnel VPN connected (a WireGuard tunnel to a dummy peer needs no VPN service), the app window, tray icon and notifications, and Zone.Identifier on files from the phone
+- Pair the real iPhone, send text, a photo and a 1 GB file both ways, and install over the previous build (devices and chat history must be kept). Download the installer on the PC itself, so SmartScreen sees it as downloaded
+- **用默认程序打开** (Open with default app) on a phone-sent `.exe` / `.ps1` / `.lnk` / `.chm` shows it in File Explorer instead of running it
+- Possible false alarm: the Public-network warning fires when any network profile is Public (`net.rs`), so a VPN or Hyper-V adapter may cause a false warning
+- From M6.1: the log file in `<data dir>\logs` and **打开日志文件夹** (Open log folder); a phone cannot reach 收件箱 / 已发送 through a junction or an 8.3 short name (the symlink test runs only on macOS, and no test covers 8.3 names; a Windows CI test would be better if the runner's disk has 8.3 names)
+- From M7: with a 1-minute idle-sleep setting, a 3-minute upload completes (`SetThreadExecutionState`); with the shared folder on a FAT32 USB stick, a file over 4 GB is refused
+- From M8: clicking a toast, or clicking it later in Action Center, opens that conversation; the toast's **复制** (Copy) and **打开** (Open) buttons; the unread count in the tray tooltip; the tray items that copy the latest text and send the clipboard (a screenshot arrives as a PNG); launch at login (Run key) and its cleanup on uninstall. Record any differences from the Mac
+- From M9: the `.local` URL either works or is not offered
+- Record the results in section 4.2, in the same format as the 4.1.1 table
 
 **Backlog** (in rough order; each gets planned before it starts)
 
 1. Thumbnails, a photo-style viewer and multi-select (save several to Photos, download a selection as a ZIP): the first candidate after M9
 2. Resumable uploads (files over 4 GB, surviving a lock or a reload): if large uploads still fail after M7
-3. Folder upload from the iPhone, if the check before M6.1 shows the picker can choose folders
+3. Folder upload from the iPhone, if the 15-minute iPhone check shows the picker can choose folders
 4. Chat search with link / photo / file filters
 5. Connection troubleshooting in the Add device window
 6. A release process: version tag → GitHub Release with the installers and checksums; then a **查看新版本** (Check for new version) button that only opens the Releases page in the browser. The app itself never contacts the internet
@@ -493,7 +488,7 @@ M7 can start once Part A is merged; Part B is the gate that closes M6.
 
 **Not doing** (platform limits, or conflicts with the LAN-only and security rules)
 
-- Appearing in the iOS share sheet as a web page: WebKit on iOS does not support Web Share Target (the M9 Shortcut covers this, if the check before M6.1 passes)
+- Appearing in the iOS share sheet as a web page: WebKit on iOS does not support Web Share Target (the M9 Shortcut covers this, if the 15-minute iPhone check passes)
 - Putting received text on the iPhone clipboard automatically: Safari allows clipboard writes only during a tap
 - Uploading while Safari is in the background: iOS suspends hidden pages and has no Background Fetch or Sync for the web
 - Automatic update checks, telemetry, or a GitHub token embedded in the app: the app would contact the internet
@@ -509,8 +504,8 @@ M7 can start once Part A is merged; Part B is the gate that closes M6.
   - API integration tests: start a real server in a temporary directory; cover pairing, auth, messages, files, Range and all kinds of error cases
   - Frontend type checking; frontend unit tests (vitest, from M7)
 - **iOS Simulator** (I can run it directly on this Mac): at the end of each milestone, walk through the iPhone web flows and take screenshots to check them
-- **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute check before M6.1, and once at the end of M6.1 (Part B), M7 and M9
-- **Windows virtual machine**: M6.1 Part B (closes M6), M8 and M9
+- **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute iPhone check, and once at the end of M7 and M9
+- **Windows PC** (later, with the real iPhone): the "Windows testing, later" list in section 12, in one pass of about 1.5 hours
 - **Security self-review checklist**:
   - Access without a cookie
   - Forged Origin
@@ -527,7 +522,7 @@ M7 can start once Part A is merged; Part B is the gate that closes M6.
 | Connection drops after the iPhone goes to the background or locks | Delayed messages; large file uploads interrupted | SSE reconnects automatically and fetches what was missed; tell the user to keep the page open during uploads; M7 keeps the screen on and retries uploads after the network returns; resumable uploads are on the backlog |
 | Uploaded photos are transcoded (HEIC → JPEG) | You do not get the original | Confirmed on a real device that a web page cannot avoid this; on the first upload, suggest sending originals through the Files app (see 4.1.1) |
 | The computer's IP changes | The Home Screen bookmark stops working | The certificate is re-signed automatically; just scan the QR code again; M9 adds connecting by the `.local` hostname |
-| No real Windows device | Windows problems are found late | CI automated tests + virtual machine tests; confirm on real hardware once a Windows PC is available |
+| No real Windows device | Windows problems are found late | CI builds, installs and tests every change on Windows; all hands-on checks are collected in one list and run once a Windows PC is available |
 | Network environment (AP isolation, guest networks, VPN, Windows set to "Public network") | Cannot connect | The Settings page gives troubleshooting tips; explained in the docs |
 | The computer idle-sleeps during a transfer | The transfer fails | Keep the computer awake while a transfer is active (M7) |
 | Port already in use | The address in the QR code changes | Move to the next port automatically, and show the actual port on the Settings page |
@@ -536,8 +531,8 @@ M7 can start once Part A is merged; Part B is the gate that closes M6.
 ## 15. Things you need to prepare or confirm
 
 1. **GitHub**: a GitHub account and a private repository (any time before M6 is fine; needed to build the Windows version)
-2. **Windows testing** (decided 2026-10-20): a Windows 11 ARM virtual machine (UTM, free) on the Mac, about 40–60 GB of disk
-3. **Real-device help**: at M0, M4 and M5, connect the iPhone and the Mac to the same Wi-Fi and help test for a few minutes; from M6.1 on, the 15-minute check before M6.1, then one test session at the end of each milestone (times are listed under each milestone)
+2. **Windows testing** (changed 2026-10-20): no VM. Hands-on Windows testing waits until you have a Windows PC; then the "Windows testing, later" list in section 12 is run in one pass, with the iPhone on the same Wi-Fi
+3. **Real-device help**: at M0, M4 and M5, connect the iPhone and the Mac to the same Wi-Fi and help test for a few minutes; then the 15-minute iPhone check, and one test session at the end of each milestone that needs one (times are listed under each milestone)
 4. **Name**: is the working name "LanShare" OK? Is `~/LanShare` OK as the default shared folder location?
 5. **Decisions for later milestones**, asked when each one starts: the global shortcut and its target device (M8), making `.local` the default QR code and the Shortcuts details (M9), the update policy and Dependabot (backlog), and approval of each new dependency
 
