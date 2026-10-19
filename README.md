@@ -84,6 +84,7 @@ src-tauri/src/
 src-tauri/examples/headless.rs   run the server without a window
 src-tauri/windows/hooks.nsh      Windows installer hooks (firewall rule)
 scripts/api_smoke.sh             end-to-end API test
+scripts/iphone_check.sh          serves the 15-minute iPhone check page (docs/iphone-check.md)
 .github/workflows/ci.yml         CI: Windows tests and installer
 ```
 

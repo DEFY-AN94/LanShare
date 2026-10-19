@@ -82,6 +82,7 @@ src-tauri/src/
 src-tauri/examples/headless.rs   无窗口运行服务
 src-tauri/windows/hooks.nsh      Windows 安装包钩子（防火墙规则）
 scripts/api_smoke.sh             接口端到端测试
+scripts/iphone_check.sh          iPhone 15 分钟检查的测试页（docs/iphone-check.md）
 .github/workflows/ci.yml         CI：Windows 测试和安装包
 ```
 
