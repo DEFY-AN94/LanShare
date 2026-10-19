@@ -1,0 +1,168 @@
+<!doctype html>
+<!--
+  The 15-minute iPhone check (docs/iphone-check.md). scripts/iphone_check.sh
+  copies this file into dist/ only while a debug build serves it, and fills in
+  the two origins below. Static, public, and it calls nothing but GET /api/ca.
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>LanShare · iPhone 检查</title>
+    <style>
+      :root {
+        --bg: #f5f5f7;
+        --surface: #ffffff;
+        --border: rgba(60, 60, 67, 0.14);
+        --text: #1d1d1f;
+        --muted: #6e6e73;
+        --accent: #007aff;
+        --accent-soft: rgba(0, 122, 255, 0.1);
+        --ok: #248a3d;
+        --bad: #d70015;
+        --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, monospace;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #000000;
+          --surface: #1c1c1e;
+          --border: rgba(84, 84, 88, 0.6);
+          --text: #f5f5f7;
+          --muted: #98989d;
+          --accent: #0a84ff;
+          --accent-soft: rgba(10, 132, 255, 0.18);
+          --ok: #30d158;
+          --bad: #ff453a;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 32px);
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.5 var(--font);
+        -webkit-text-size-adjust: 100%;
+      }
+      main { max-width: 640px; margin: 0 auto; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      h2 { font-size: 17px; margin: 0 0 8px; }
+      p { margin: 8px 0; }
+      .muted { color: var(--muted); font-size: 14px; }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        margin: 16px 0;
+      }
+      .num {
+        display: inline-block;
+        min-width: 24px;
+        height: 24px;
+        margin-right: 6px;
+        border-radius: 12px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 14px;
+        line-height: 24px;
+        text-align: center;
+      }
+      code, .mono { font-family: var(--mono); font-size: 14px; word-break: break-all; }
+      dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 0; }
+      dt { color: var(--muted); font-size: 14px; }
+      dd { margin: 0; font-size: 14px; word-break: break-all; }
+      .ok { color: var(--ok); font-weight: 600; }
+      .bad { color: var(--bad); font-weight: 600; }
+      .btn {
+        display: inline-block;
+        padding: 10px 16px;
+        border: 0;
+        border-radius: 10px;
+        background: var(--accent);
+        color: #fff;
+        font: 600 16px var(--font);
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .btn.secondary { background: var(--accent-soft); color: var(--accent); }
+      .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+      .row code { flex: 1; min-width: 0; }
+      .row .btn { flex: none; padding: 6px 12px; font-size: 14px; }
+      .links { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+      /* The real input is visually hidden; the label is the tap target. */
+      .picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+      ol.files { margin: 8px 0 0; padding-left: 24px; max-height: 320px; overflow: auto; }
+      ol.files li { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body data-local-origin="__LOCAL_ORIGIN__" data-ip-origin="__IP_ORIGIN__">
+    <main>
+      <h1>iPhone 15 分钟检查</h1>
+      <p class="muted">只用于测试，由开发版 LanShare 临时提供。本页只读取 /api/ca（公开信息），选中的文件不会上传。</p>
+
+      <section class="card">
+        <h2>当前连接</h2>
+        <dl>
+          <dt>地址</dt>
+          <dd id="origin" class="mono"></dd>
+          <dt>地址类型</dt>
+          <dd id="host-kind"></dd>
+          <dt>安全连接</dt>
+          <dd id="secure"></dd>
+          <dt>证书名称</dt>
+          <dd id="ca-name" class="mono">读取中…</dd>
+          <dt>Safari</dt>
+          <dd id="safari"></dd>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2><span class="num">1</span>Safari 打开 .local 地址</h2>
+        <p>先用 IP 地址打开本页（对照：IP 地址不应有警告），再点「用 .local 打开」。</p>
+        <p><b>通过</b>：用 .local 地址打开时没有出现「此连接非私人连接」，地址栏显示 <code id="local-host-label">电脑名.local</code>。</p>
+        <div class="links">
+          <a id="open-ip" class="btn secondary" href="#">用 IP 打开</a>
+          <a id="open-local" class="btn" href="#">用 .local 打开</a>
+        </div>
+        <p id="host-verdict" class="muted"></p>
+      </section>
+
+      <section class="card">
+        <h2><span class="num">2</span>快捷指令访问 /api/ca</h2>
+        <p>在「快捷指令」App 里新建只有一个「获取 URL 内容」操作的快捷指令，分别填下面两个地址各运行一次（步骤见电脑上的 docs/iphone-check.md）。</p>
+        <div class="row"><code id="ca-local"></code><button class="btn secondary" data-copy="ca-local">复制</button></div>
+        <div class="row"><code id="ca-ip"></code><button class="btn secondary" data-copy="ca-ip">复制</button></div>
+        <p><b>通过</b>：运行后显示一项 name，值是 <code id="ca-expected">（证书名称）</code>，没有证书错误。</p>
+        <p id="copy-status" class="muted" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <h2><span class="num">3</span>选择整个文件夹</h2>
+        <p>测试 <code>&lt;input type="file" webkitdirectory&gt;</code>。可先在「文件」App 的「我的 iPhone」里建一个带子文件夹的测试文件夹。</p>
+        <p class="muted">浏览器支持 webkitdirectory 属性：<span id="dir-support"></span></p>
+        <label class="picker">
+          <span class="btn">选择文件夹</span>
+          <input id="dir-input" type="file" webkitdirectory multiple />
+        </label>
+        <p><b>通过</b>：能选中一个文件夹（不只是单个文件），下面的路径以文件夹名开头，例如 <code>测试/子文件夹/a.jpg</code>。</p>
+        <div id="dir-result" hidden>
+          <p id="dir-summary"></p>
+          <ol id="dir-files" class="files"></ol>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2><span class="num">4</span>「存储到相册」的分享面板</h2>
+        <p>本页测不了这一项，请在 LanShare 里试：打开和这台电脑的聊天，在一条<b>图片</b>消息下点「存储到相册」→「打开分享」。</p>
+        <p>看系统分享面板里有没有<b>「拷贝」</b>和<b>「微信」</b>（App 那一行可以左右滑，最右边的「更多」里也找一下）。</p>
+        <p class="muted">两个都有：不需要单独做「复制图片」按钮。</p>
+      </section>
+    </main>
+    <script src="/iphone-check.js"></script>
+  </body>
+</html>
