@@ -1,0 +1,167 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds both installers, checks them and publishes a GitHub Release
+# with the installers and their checksums. See docs/releasing.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-tag:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag_version: ${{ steps.check.outputs.tag_version }}
+      suffixed: ${{ steps.check.outputs.suffixed }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      notes: ${{ steps.check.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        run: bash scripts/release_check.sh "$GITHUB_REF_NAME"
+
+  # The same jobs as for every push: tests on Windows and macOS, the Windows installer and its
+  # install check. The installer published below is the artifact that this check installed.
+  ci:
+    name: CI
+    needs: check-tag
+    uses: ./.github/workflows/ci.yml
+
+  macos-app:
+    name: macOS app
+    needs: check-tag
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.check-tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      # signingIdentity "-" in tauri.conf.json ad-hoc signs the whole bundle, not just the
+      # executable, so macOS does not call a downloaded copy damaged.
+      - run: npx tauri build --bundles app
+      - name: Zip the app
+        run: |
+          mkdir release
+          ditto -c -k --keepParent src-tauri/target/release/bundle/macos/LanShare.app "release/LanShare_${VERSION}_macos-arm64.zip"
+      - name: Check a fresh copy from the zip
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          mkdir unzipped
+          ditto -x -k "release/LanShare_${VERSION}_macos-arm64.zip" unzipped
+          app=unzipped/LanShare.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          sig=$(codesign -dv "$app" 2>&1)
+          echo "$sig"
+          grep -qx 'Identifier=com.lanshare.desktop' <<<"$sig" || fail "the bundle is not signed, only its executable"
+          grep -q '^Sealed Resources' <<<"$sig" || fail "the signature does not seal the bundle's resources"
+          plist="$app/Contents/Info.plist"
+          bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
+          [ "$bundle_version" = "$VERSION" ] || fail "Info.plist says version $bundle_version, expected $VERSION"
+          exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          archs=$(lipo -archs "$exe")
+          [ "$archs" = arm64 ] || fail "the executable is built for '$archs', expected arm64"
+          minos=$(vtool -show-build "$exe" | awk '$1 == "minos" { print $2 }')
+          [ "$minos" = 11.0 ] || fail "the executable needs macOS $minos, expected 11.0"
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+          echo "signature, version $bundle_version, $archs and macOS $minos checked"
+      - name: Start the app and check that it answers
+        run: |
+          "$EXE" &
+          pid=$!
+          up=false
+          for i in $(seq 1 60); do
+            if curl -sk --max-time 2 -o /dev/null https://127.0.0.1:39210/api/ca; then up=true; break; fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          if ! $up; then
+            cat "$HOME/Library/Application Support/com.lanshare.desktop/logs/lanshare.log" || true
+            echo "::error::the app did not answer on port 39210"
+            exit 1
+          fi
+          echo 'the app answers on port 39210'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LanShare-macos-arm64
+          path: release/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [check-tag, ci, macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check-tag.outputs.version }}
+      TAG_VERSION: ${{ needs.check-tag.outputs.tag_version }}
+      SUFFIXED: ${{ needs.check-tag.outputs.suffixed }}
+      PRERELEASE: ${{ needs.check-tag.outputs.prerelease }}
+      NOTES: ${{ needs.check-tag.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: LanShare-windows-x64
+          path: release
+      - uses: actions/download-artifact@v8
+        with:
+          name: LanShare-macos-arm64
+          path: release
+      - name: Write the checksums and the release notes
+        run: |
+          set -euo pipefail
+          zip="LanShare_${VERSION}_macos-arm64.zip"
+          exe="LanShare_${VERSION}_x64-setup.exe"
+          ls -l release
+          [ "$(ls release)" = "$(printf '%s\n' "$zip" "$exe" | sort)" ] || { echo "::error::expected exactly $zip and $exe"; exit 1; }
+          (cd release && sha256sum "$zip" "$exe" > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          {
+            if [ "$SUFFIXED" = true ]; then
+              echo "Release candidate: LanShare $VERSION built from commit $(git rev-parse --short HEAD) (tag \`$GITHUB_REF_NAME\`). The app reports its version as $VERSION."
+              echo
+            fi
+            if [ -n "$NOTES" ]; then
+              cat "$NOTES"
+              echo
+            fi
+            echo '## Downloads'
+            echo
+            echo '| File | For |'
+            echo '|---|---|'
+            echo "| \`$zip\` | Macs with Apple silicon, macOS 11 or later. Unzip it and move \`LanShare.app\` to Applications |"
+            echo "| \`$exe\` | Windows 10 / 11 (x64) installer |"
+            echo '| `SHA256SUMS.txt` | Checksums of both files |'
+            echo
+            echo '## Checksums (SHA-256)'
+            echo
+            echo '```'
+            cat release/SHA256SUMS.txt
+            echo '```'
+          } > notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          if [ "$PRERELEASE" = true ]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "LanShare $TAG_VERSION" --notes-file notes.md "${prerelease[@]}" \
+            "release/LanShare_${VERSION}_macos-arm64.zip" "release/LanShare_${VERSION}_x64-setup.exe" release/SHA256SUMS.txt

@@ -28,6 +28,8 @@ When you upload from **Photo Library** on the iPhone, iOS converts HEIC photos t
 
 Closing the window keeps LanShare running in the background: in the menu bar and Dock on macOS, and in the notification area (system tray) on Windows. The menu bar or tray icon's menu has **打开 LanShare** (Open LanShare), **暂停共享** (Pause sharing) and **退出 LanShare** (Quit LanShare).
 
+LanShare never checks for updates itself. Settings › **查看新版本** (Check for new version) opens the **Releases** page in your browser, where each release lists what changed, both installers and their checksums.
+
 ## Windows
 
 Download the installer, `LanShare_<version>_x64-setup.exe`, from the repository's **Releases** page. GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) also runs every test on Windows and keeps the installer of every build as an artifact: **Actions** tab › a successful run › **Artifacts** › `LanShare-windows-x64` (unzip it to get the `.exe`; artifacts are kept for 90 days). Either way you need to be signed in to GitHub with access to this repository. The Windows version has not been tested by hand yet (see PLAN.md, "Windows testing, later").
@@ -73,6 +75,10 @@ PORT=$(grep -o 'listening on port [0-9]*' .dev-data/headless.log | grep -o '[0-9
 PHONE_OVERRIDE=https://127.0.0.1:$PORT scripts/api_smoke.sh .
 ```
 
+### Releases
+
+Pushing a version tag on `main` makes GitHub Actions build, check and publish a release with both installers and their checksums. The steps are in [docs/releasing.md](docs/releasing.md).
+
 ## Project layout
 
 ```
@@ -85,7 +91,9 @@ src-tauri/examples/headless.rs   run the server without a window
 src-tauri/windows/hooks.nsh      Windows installer hooks (firewall rule)
 scripts/api_smoke.sh             end-to-end API test
 scripts/iphone_check.sh          serves the 15-minute iPhone check page (docs/iphone-check.md)
+scripts/release_check.sh         checks a release tag against the code (docs/releasing.md)
 .github/workflows/ci.yml         CI: Windows tests and installer
+.github/workflows/release.yml    release: a tag vX.Y.Z publishes both installers
 ```
 
 ## Where data lives

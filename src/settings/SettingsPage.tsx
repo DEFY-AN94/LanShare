@@ -5,8 +5,11 @@ import { useToast } from "../components/Toast";
 import { CopyButton } from "../chat/MessageBubble";
 import { api } from "../lib/api";
 import { events } from "../lib/events";
-import { hostOpen } from "../lib/fileActions";
+import { hostOpen, hostOpenUrl } from "../lib/fileActions";
 import type { HostOverview } from "../lib/types";
+
+// Only opened in the browser when asked: LanShare itself never contacts the internet.
+const RELEASES_URL = "https://github.com/DEFY-AN94/LanShare/releases";
 
 export function SettingsPage() {
   const [info, setInfo] = useState<HostOverview | null>(null);
@@ -226,7 +229,19 @@ export function SettingsPage() {
       </section>
 
       <p className="muted small center">
-        LanShare {info.version} · {info.host_name}
+        LanShare {info.version} · {info.host_name} ·{" "}
+        <a
+          href={RELEASES_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => {
+            // The desktop window must never navigate away; open in the system browser.
+            e.preventDefault();
+            void hostOpenUrl(RELEASES_URL).catch((err: Error) => toast(err.message, "error"));
+          }}
+        >
+          查看新版本
+        </a>
       </p>
     </div>
   );
