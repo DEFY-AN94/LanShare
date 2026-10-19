@@ -16,7 +16,7 @@
 
 ## 使用
 
-1. 打开 LanShare。第一次运行时 macOS 可能会问「是否允许 LanShare 接受传入的网络连接」，要点**允许**，否则手机连不上。
+1. 打开 LanShare（在仓库的 **Releases** 页面下载，或者按下面「开发」一节自己构建）。第一次运行时 macOS 可能会问「是否允许 LanShare 接受传入的网络连接」，要点**允许**，否则手机连不上。
 2. 在电脑端点「添加设备」，用 iPhone 相机扫二维码（iPhone 和电脑要连同一个 Wi-Fi）。
 3. Safari 提示「此连接非私人连接」时，点 显示详细信息 › 访问此网站。想彻底去掉这个提示，配对后按页面引导安装电脑的证书（推荐），安装前核对证书指纹和电脑上显示的一致。
 4. 在 iPhone 上点「请求连接」，核对两边的确认码一致后，在电脑上点「允许」。
@@ -28,7 +28,7 @@
 
 ## Windows 版
 
-GitHub Actions（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 Windows 上跑全部测试，并把安装包作为构建产物上传：打开仓库的 Actions › 最新一次成功的运行 › Artifacts › `LanShare-windows-x64` 下载，解压后就是 `.exe` 安装包。下载需要登录有这个仓库权限的 GitHub 账号，构建产物保留 90 天。
+安装包 `LanShare_<版本>_x64-setup.exe` 在仓库的 **Releases** 页面下载。GitHub Actions（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）也会在 Windows 上跑全部测试，并把每次构建的安装包作为构建产物保存：Actions › 某次成功的运行 › Artifacts › `LanShare-windows-x64`（解压后是 `.exe`，构建产物保留 90 天）。两种方式都需要登录有这个仓库权限的 GitHub 账号。Windows 版还没有在真机上手动测试过（见 PLAN.md 的「Windows testing, later」）。
 
 - 安装包需要管理员权限（装到「Program Files」），安装时会自动添加防火墙规则：只允许同一子网的设备、只在「专用网络」下访问 LanShare；卸载时删除规则
 - 如果 Windows 把当前 Wi-Fi 设成了「公用网络」，手机连不上，LanShare 的设置页和添加设备窗口会提示改成「专用网络」
