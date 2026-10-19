@@ -18,7 +18,7 @@ Status: the Mac version is done. The Windows version is built, tested and packag
 
 ## Getting started
 
-1. Open LanShare. On first launch macOS may ask whether LanShare can accept incoming network connections. Click **Allow**, or the iPhone will not be able to connect.
+1. Open LanShare (download it from the repository's **Releases** page, or build it yourself, see [Development](#development)). On first launch macOS may ask whether LanShare can accept incoming network connections. Click **Allow**, or the iPhone will not be able to connect.
 2. On the computer, click **添加设备** (Add device) and scan the QR code with the iPhone's Camera app. The iPhone and the computer must be on the same Wi-Fi network.
 3. When Safari says "This Connection Is Not Private", tap Show Details › visit this website. To get rid of this warning for good, install the computer's certificate after pairing by following the steps on the page (recommended). Before installing it, check that the certificate fingerprint matches the one shown on the computer.
 4. On the iPhone, tap **请求连接** (Request connection). Check that the confirmation code is the same on both screens, then click **允许** (Allow) on the computer.
@@ -30,7 +30,7 @@ Closing the window keeps LanShare running in the background: in the menu bar and
 
 ## Windows
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs every test on Windows and uploads the installer as a build artifact. To download it, open the repository's **Actions** tab › the latest successful run › **Artifacts** › `LanShare-windows-x64`, then unzip it to get the `.exe` installer. You need to be signed in to GitHub with access to this repository, and artifacts are kept for 90 days.
+Download the installer, `LanShare_<version>_x64-setup.exe`, from the repository's **Releases** page. GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) also runs every test on Windows and keeps the installer of every build as an artifact: **Actions** tab › a successful run › **Artifacts** › `LanShare-windows-x64` (unzip it to get the `.exe`; artifacts are kept for 90 days). Either way you need to be signed in to GitHub with access to this repository. The Windows version has not been tested by hand yet (see PLAN.md, "Windows testing, later").
 
 - Installation requires administrator rights (LanShare installs to Program Files). The installer adds a firewall rule that lets only devices on the same subnet reach LanShare, and only on networks set to Private. Uninstalling removes the rule.
 - If Windows has marked the current Wi-Fi as a Public network, the phone cannot connect. LanShare's settings page and the **添加设备** (Add device) window show a warning asking you to switch the network to Private.

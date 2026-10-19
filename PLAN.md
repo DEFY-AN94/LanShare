@@ -2,7 +2,7 @@
 
 > A messaging and file-transfer tool for iPhone ↔ computer (macOS / Windows) on the local network. LAN only; nothing goes through any cloud.
 >
-> Document date: 2026-10-20 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 built and in review (PR #4); next: M7 → M9, planned 2026-10-20 (see section 12) · "LanShare" is a working name and can be changed
+> Document date: 2026-10-20 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 done (PR #4); 15-minute iPhone check passed 2026-10-20; next: M7 → M9, planned 2026-10-20 (see section 12) · "LanShare" is a working name and can be changed
 
 ## 1. Goals and scope
 
@@ -92,6 +92,20 @@ Ran a test server with a self-signed certificate and tested each item in the Sim
 | Certificate name | ✅ (after fix) Every root certificate used to be named "LanShare Local CA (Mac)": each dev run, the release build and every **重置证书** (Reset certificate) created its own, and they looked identical in "VPN & Device Management" and "Certificate Trust Settings", so there was no way to tell which one was old. New certificate names now end with a 6-character ID (taken from the certificate's key identifier, e.g. "LanShare Local CA (Mac) 2DD31B"), and both **设置 › 安全** (Settings › Security) in the desktop app and the iPhone install guide show the current certificate's full name. Old certificates that are already installed are not regenerated just to rename them; their names stay the same |
 | The `.local` name in the certificate | ✅ (after fix) It used to come from the hostname, which on this Mac is `mac.local` (a hostname assigned by the router), while Bonjour actually answers to `MyMac.local`, so `.local` access (now planned for M9) would fail. On macOS it now uses the Bonjour local hostname (System Settings › General › Sharing › Local hostname) and falls back to the hostname only when that is unavailable; after a rename, the server certificate is re-signed automatically |
 | Computer name | ✅ (after fix) The computer name in the phone's top bar, on the pairing page and in new certificate names used to come from the hostname, which shows as "Mac" on this Mac. On macOS it now uses "Computer name" (System Settings › General › Sharing, i.e. `scutil --get ComputerName`, here "MyMac") and falls back to the hostname only when that is unavailable; Windows is unchanged. A rename takes effect after restarting LanShare; existing root certificates are not regenerated because of it |
+
+### 4.1.2 15-minute iPhone check (2026-10-20, real iPhone · iOS 27.2)
+
+Run with the page and steps in `docs/iphone-check.md`, against the desktop app and the CA the iPhone already trusts:
+
+| Check | Result |
+|---|---|
+| Safari opens `https://mymac.local:39210` with the certificate trusted | ✅ No warning. Two things had to be put right first: the iPhone no longer trusted the CA (turned back on in Certificate Trust Settings), and the installed build from 2026-10-15 predated the Bonjour-name fix, so its certificate named `mac.local` (rebuilt from `main`, same CA) |
+| Shortcut "Get Contents of URL" on `/api/ca` over `.local` | ✅ Returns the CA name. iOS asks once per address whether the action may connect; before the CA was trusted it said the certificate was invalid |
+| The same Shortcut over the IP | ✅ Same result |
+| `<input type="file" webkitdirectory>` picks a whole folder | ✅ Works (the Simulator also returned every file with its folder path) |
+| The share sheet behind **存储到相册** (Save to Photos) | ✅ Copy and Save Image among the actions, WeChat among the apps, plus Save to Files and AirDrop |
+
+Consequences for section 12: M9 builds both the `.local` address and the Shortcuts; folder upload goes on the backlog; no separate "copy image" button. Also seen: the pairing cookie belongs to one address, so a phone paired over the IP sees the pairing page at `mymac.local`, which M9's `.local` QR code and **替换这台旧设备** (Replace this old device) have to cover.
 
 ### 4.2 Windows version (no Windows machine at hand)
 
@@ -384,7 +398,7 @@ Each milestone has a result that can be verified in acceptance testing. Finish o
 - Still to test on a real Windows PC: see "Windows testing, later" in section 12
 - Acceptance: Actions produces the installer (done); installing it on Windows and completing pairing and transfers with an iPhone are in "Windows testing, later"
 
-**15-minute iPhone check** (no code; any time before M9)
+**15-minute iPhone check** (no code; ✅ done 2026-10-20, all four passed, see 4.1.2)
 
 A test page and a one-action Shortcut, run on the real iPhone with the LanShare certificate trusted. Each answer decides part of the plan:
 
@@ -395,7 +409,7 @@ A test page and a one-action Shortcut, run on the real iPhone with the LanShare 
 
 **M6.1 Fix gaps in what LanShare already promises** (about 1 week)
 
-- Status: built 2026-10-20, in review as PR #4
+- Status: ✅ done 2026-10-20 (PR #4); its Windows parts are checked by CI, and by hand later ("Windows testing, later")
 - Log file for installed builds. Today release builds keep no logs: tracing goes to stdout only (`lib.rs`), and Windows release builds have no console. Write a size-capped log to `<data dir>/logs`, switched on once the data directory is known. Settings gets **打开日志文件夹** (Open log folder) and a **详细日志** (Verbose logging) switch that resets on restart. Logs never contain message text or file names: scrub the current lines that log paths (`error.rs`, `host.rs`, `mod.rs`) and the headless bridge's notification line, which logs message text and file names (`bridge.rs`; the API tests and the smoke test use that bridge), and a test checks that marker strings never reach the log
 - Deleted chat text is really gone. SQLite's `secure_delete` is off (`db.rs` sets only WAL, foreign keys and the busy timeout), so cleared text stays readable in `lanshare.db` and its WAL file. Turn it on, and run one purge step (`PRAGMA wal_checkpoint(TRUNCATE)`; a plain checkpoint leaves old frames in the WAL file) after every delete path: clearing chats, removing a device, unpairing from the phone, and the single-message delete in M7
 - Automatic chat cleanup (section 3): a Settings choice of off / 30 days / 90 days, run at startup, every 6 hours and whenever the setting changes, through the same purge step
@@ -447,10 +461,10 @@ A test page and a one-action Shortcut, run on the real iPhone with the LanShare 
   - Copy a URL on the Mac and use the tray item or the shortcut: it appears in the phone's chat without the window coming forward; an empty clipboard gives an error notification and sends nothing
   - If the OS refuses a shortcut registration, Settings shows the error and keeps the old shortcut (other apps' in-app shortcuts cannot be detected; Settings says so)
 
-**M9 Fixed address and iOS Shortcuts** (about 2 weeks; scope depends on the 15-minute iPhone check)
+**M9 Fixed address and iOS Shortcuts** (about 2 weeks; the 15-minute iPhone check confirmed both parts)
 
-- Connect by computer name (`mymac.local`). Add device also offers a `.local` QR code, with the IP one as a fallback; whether it becomes the default on macOS is decided when M9 starts, after the real-iPhone test passes. A Home Screen icon added from it survives IP changes. When a phone pairs again, the computer can choose **替换这台旧设备** (Replace this old device), so the device keeps its ID and chat history. The listener stays IPv4-only: Safari then falls back to IPv4 at once when `.local` also resolves to an IPv6 address
-- iOS Shortcuts, only if the 15-minute iPhone check shows a Shortcut can reach LanShare. A send-only token per device can post messages and files but read nothing. One Shortcut in the share sheet sends text, links, photos and files; an optional second scope, off by default, lets a Shortcut copy the latest text from the computer. The illustrated Chinese recipe keeps the token in a file under On My iPhone (not iCloud Drive) and reads it at run time, so the Shortcut itself holds no secret and does not carry it through iCloud
+- Connect by computer name (`mymac.local`). Add device also offers a `.local` QR code, with the IP one as a fallback; whether it becomes the default on macOS is decided when M9 starts, after the real-iPhone test passes. A Home Screen icon added from it survives IP changes. When a phone pairs again, the computer can choose **替换这台旧设备** (Replace this old device), so the device keeps its ID and chat history. The listener stays IPv4-only: Safari then falls back to IPv4 at once when `.local` also resolves to an IPv6 address The pairing cookie belongs to one address (seen in the iPhone check), so a phone paired over the IP is not paired at the `.local` address until it pairs there
+- iOS Shortcuts (the 15-minute iPhone check confirmed that a Shortcut reaches LanShare over `.local` and over the IP; iOS asks once per address). A send-only token per device can post messages and files but read nothing. One Shortcut in the share sheet sends text, links, photos and files; an optional second scope, off by default, lets a Shortcut copy the latest text from the computer. The illustrated Chinese recipe keeps the token in a file under On My iPhone (not iCloud Drive) and reads it at run time, so the Shortcut itself holds no secret and does not carry it through iCloud
 - Needs from you: about 45 minutes on the iPhone, including an IP change; decisions on making `.local` the default and on the Shortcuts details
 - Acceptance:
   - A real iPhone pairs through the `.local` QR code with no warning when the CA is trusted; after the Mac's IP changes, the Home Screen icon reconnects with its chat history
@@ -476,7 +490,7 @@ Windows features are still built, and CI builds and tests every change on Window
 
 1. Thumbnails, a photo-style viewer and multi-select (save several to Photos, download a selection as a ZIP): the first candidate after M9
 2. Resumable uploads (files over 4 GB, surviving a lock or a reload): if large uploads still fail after M7
-3. Folder upload from the iPhone, if the 15-minute iPhone check shows the picker can choose folders
+3. Folder upload from the iPhone: the iPhone check confirmed the picker can choose a whole folder, so it needs a client-side `mkdir` per folder plus the existing upload
 4. Chat search with link / photo / file filters
 5. Connection troubleshooting in the Add device window
 6. A release process: version tag → GitHub Release with the installers and checksums; then a **查看新版本** (Check for new version) button that only opens the Releases page in the browser. The app itself never contacts the internet
@@ -488,12 +502,13 @@ Windows features are still built, and CI builds and tests every change on Window
 
 **Not doing** (platform limits, or conflicts with the LAN-only and security rules)
 
-- Appearing in the iOS share sheet as a web page: WebKit on iOS does not support Web Share Target (the M9 Shortcut covers this, if the 15-minute iPhone check passes)
+- Appearing in the iOS share sheet as a web page: WebKit on iOS does not support Web Share Target (the M9 Shortcut covers this)
 - Putting received text on the iPhone clipboard automatically: Safari allows clipboard writes only during a tap
 - Uploading while Safari is in the background: iOS suspends hidden pages and has no Background Fetch or Sync for the web
 - Automatic update checks, telemetry, or a GitHub token embedded in the app: the app would contact the internet
 - Approving a pairing from a notification: the confirmation codes must be compared in the window
 - Watching the computer's clipboard continuously: privacy
+- A separate "copy image" button: the share sheet behind **存储到相册** (Save to Photos) already offers Copy and WeChat (4.1.2)
 
 **Long term**: native iOS app (see section 11)
 
@@ -504,7 +519,7 @@ Windows features are still built, and CI builds and tests every change on Window
   - API integration tests: start a real server in a temporary directory; cover pairing, auth, messages, files, Range and all kinds of error cases
   - Frontend type checking; frontend unit tests (vitest, from M7)
 - **iOS Simulator** (I can run it directly on this Mac): at the end of each milestone, walk through the iPhone web flows and take screenshots to check them
-- **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute iPhone check, and once at the end of M7 and M9
+- **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute iPhone check (done 2026-10-20), and once at the end of M7 and M9
 - **Windows PC** (later, with the real iPhone): the "Windows testing, later" list in section 12, in one pass of about 1.5 hours
 - **Security self-review checklist**:
   - Access without a cookie
