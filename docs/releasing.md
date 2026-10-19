@@ -18,7 +18,7 @@ LanShare never checks for updates itself. Settings › **查看新版本** (Chec
    git push origin v0.2.0
    ```
 
-3. Follow the **Release** workflow in the Actions tab. It takes about 20–30 minutes, and the release appears only after every job has passed.
+3. Follow the **Release** workflow in the Actions tab. It takes about 25 minutes, most of it building the Windows installer, and the release appears only after every job has passed.
 
 ## What the workflow does
 
@@ -29,7 +29,7 @@ LanShare never checks for updates itself. Settings › **查看新版本** (Chec
 | macOS app | `tauri build --bundles app`, zipped with `ditto`. `signingIdentity: "-"` in `tauri.conf.json` ad-hoc signs the whole bundle; with only the executable signed, macOS calls a downloaded copy damaged. A fresh copy from the zip is checked: the signature is valid and covers the bundle, the version matches, it is arm64 for macOS 11.0, and it starts and answers on port 39210 |
 | Publish the release | Writes `SHA256SUMS.txt` and the release notes (the notes file, then the downloads table and the checksums) and runs `gh release create`. The only job that can write to the repository |
 
-A release run uses about 15–20 macOS runner minutes and 25–35 Windows and Linux minutes: tag runs cannot use the build caches.
+A release run uses about 7 macOS runner minutes (tests 2, app 4–5) and about 25 Windows and Linux minutes (measured on the first run, 2026-10-20).
 
 ## Pre-releases and release candidates
 
