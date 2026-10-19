@@ -26,6 +26,8 @@
 
 关掉窗口后 LanShare 会继续在后台运行：macOS 上在菜单栏和 Dock，Windows 上在任务栏通知区域（系统托盘）。菜单栏 / 托盘图标的菜单里可以「打开 LanShare」、「暂停共享」或「退出 LanShare」。
 
+LanShare 不会自己检查更新。设置 ›「查看新版本」会用浏览器打开 **Releases** 页面，每个版本都写了改动，并附有两个安装包和校验和。
+
 ## Windows 版
 
 安装包 `LanShare_<版本>_x64-setup.exe` 在仓库的 **Releases** 页面下载。GitHub Actions（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）也会在 Windows 上跑全部测试，并把每次构建的安装包作为构建产物保存：Actions › 某次成功的运行 › Artifacts › `LanShare-windows-x64`（解压后是 `.exe`，构建产物保留 90 天）。两种方式都需要登录有这个仓库权限的 GitHub 账号。Windows 版还没有在真机上手动测试过（见 PLAN.md 的「Windows testing, later」）。
@@ -71,6 +73,10 @@ PORT=$(grep -o 'listening on port [0-9]*' .dev-data/headless.log | grep -o '[0-9
 PHONE_OVERRIDE=https://127.0.0.1:$PORT scripts/api_smoke.sh .
 ```
 
+### 发布
+
+在 `main` 上推送版本标签后，GitHub Actions 会自动构建、检查并发布新版本，附两个安装包和校验和。步骤见 [docs/releasing.md](docs/releasing.md)（英文）。
+
 ## 目录
 
 ```
@@ -83,7 +89,9 @@ src-tauri/examples/headless.rs   无窗口运行服务
 src-tauri/windows/hooks.nsh      Windows 安装包钩子（防火墙规则）
 scripts/api_smoke.sh             接口端到端测试
 scripts/iphone_check.sh          iPhone 15 分钟检查的测试页（docs/iphone-check.md）
+scripts/release_check.sh         检查发布标签和代码是否一致（docs/releasing.md）
 .github/workflows/ci.yml         CI：Windows 测试和安装包
+.github/workflows/release.yml    发布：推送标签 vX.Y.Z 后发布两个安装包
 ```
 
 ## 数据位置

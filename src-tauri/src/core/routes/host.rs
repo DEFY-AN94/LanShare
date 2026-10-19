@@ -247,7 +247,7 @@ pub struct UrlBody {
     url: String,
 }
 
-/// Opens a link from a chat message in the system browser (http/https only).
+/// Opens a link from a chat message or Settings in the system browser (http/https only).
 pub async fn open_url(State(state): State<Shared>, Json(b): Json<UrlBody>) -> ApiResult<StatusCode> {
     let url = b.url.trim();
     let lower = url.to_ascii_lowercase();

@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LanShare",
-  "version": "0.1.0",
   "identifier": "com.lanshare.desktop",
   "build": {
     "beforeDevCommand": {
@@ -29,7 +28,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "windows": {
       "nsis": {

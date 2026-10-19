@@ -493,7 +493,7 @@ Windows features are still built, and CI builds and tests every change on Window
 3. Folder upload from the iPhone: the iPhone check confirmed the picker can choose a whole folder, so it needs a client-side `mkdir` per folder plus the existing upload
 4. Chat search with link / photo / file filters
 5. Connection troubleshooting in the Add device window
-6. A release process: version tag → GitHub Release with the installers and checksums; then a **查看新版本** (Check for new version) button that only opens the Releases page in the browser. The app itself never contacts the internet
+6. ✅ A release process (done 2026-10-20): pushing a tag `vX.Y.Z` on `main` runs `.github/workflows/release.yml`, which reuses the CI jobs (tests, the Windows installer and its install check), builds and checks the ad-hoc-signed Mac app, and publishes a GitHub Release with both installers and `SHA256SUMS.txt`; versions below 1.0 are pre-releases. `src-tauri/Cargo.toml` is the only place that holds the version. Settings has a **查看新版本** (Check for new version) link that only opens the Releases page in the browser; the app itself never contacts the internet. Steps in `docs/releasing.md`
 7. Send to the phone from the Finder / File Explorer (drop on the Dock icon, Open With, SendTo)
 8. Computer-to-computer transfers (Mac ↔ Windows)
 9. Folder permissions per device
