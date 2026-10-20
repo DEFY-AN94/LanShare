@@ -8,10 +8,24 @@ export function installViewportFix() {
   const update = () => {
     root.style.setProperty("--app-height", `${Math.round(vv.height)}px`);
     root.style.setProperty("--app-top", `${Math.round(vv.offsetTop)}px`);
-    // A much shorter visual viewport means the on-screen keyboard is up.
-    root.classList.toggle("keyboard-open", window.innerHeight - vv.height > 150);
+    // A much shorter visual viewport means the on-screen keyboard is up. Compare it
+    // with the layout viewport: on iOS window.innerHeight shrinks with the keyboard
+    // too. Times scale, so pinch-zooming in does not count as a keyboard.
+    root.classList.toggle("keyboard-open", root.clientHeight - vv.height * vv.scale > 150);
   };
-  vv.addEventListener("resize", update);
-  vv.addEventListener("scroll", update);
+  // iOS can report a change halfway through (the keyboard moving, the page coming
+  // back from the background) and then stay quiet, which left the keyboard layout
+  // on screen after the keyboard was gone. Measure again once things settle.
+  let settle = 0;
+  const onChange = () => {
+    update();
+    window.clearTimeout(settle);
+    settle = window.setTimeout(update, 500);
+  };
+  vv.addEventListener("resize", onChange);
+  vv.addEventListener("scroll", onChange);
+  window.addEventListener("resize", onChange);
+  window.addEventListener("pageshow", onChange);
+  document.addEventListener("visibilitychange", onChange);
   update();
 }
