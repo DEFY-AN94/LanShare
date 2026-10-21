@@ -79,6 +79,10 @@ curl "${H[@]}" -o "$T/back.jpg" "$LOCAL/api/messages/$FID/file"
 cmp -s "$T/pic.jpg" "$T/back.jpg" && ok "host downloads identical file" || bad "host downloads identical file"
 FM2=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/pic.jpg" "$PHONE/api/messages/upload?client_id=f-1&name=IMG_0001.jpg")
 check "file upload retry is idempotent" "$(echo "$FM2" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$FID"
+DM=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d '{"client_id":"del-1","text":"delete me"}' "$PHONE/api/messages" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+check "device deletes its own message" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -X DELETE "$PHONE/api/messages/$DM")" 204
+check "deleted message is gone" "$(curl "${D[@]}" "$PHONE/api/messages?limit=50" | py -c "import sys,json;print(any(m['id']==$DM for m in json.load(sys.stdin)['messages']))")" False
+check "a late retry of the deleted message is refused" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"client_id":"del-1","text":"delete me"}' "$PHONE/api/messages")" 410
 
 echo "== SSE"
 ( curl "${D[@]}" -N --max-time 3 "$PHONE/api/events" > "$T/sse.txt" ) &
@@ -92,6 +96,12 @@ echo "== files"
 echo "hello" > "$T/a.txt"
 check "upload to root" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=a.txt")" 200
 contains "upload duplicate gets renamed" "$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=a.txt")" '"name":"a (1).txt"'
+U1=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=a.txt&upload_id=u-1" | py -c 'import sys,json;print(json.load(sys.stdin)["name"])')
+U2=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=a.txt&upload_id=u-1" | py -c 'import sys,json;print(json.load(sys.stdin)["name"])')
+check "upload retried with its id keeps one copy" "$U1 $U2" "a (2).txt a (2).txt"
+check "upload check says a small file fits" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' "$PHONE/api/upload-check?dir=&size=5")" 204
+check "upload whose data does not match its size is refused" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=short.txt&size=999")" 400
+check "upload with the right size goes through" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=sized.txt&size=6")" 200
 check "mkdir" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"dir":"","name":"\u7167\u7247"}' "$PHONE/api/files/mkdir")" 200
 check "mkdir duplicate conflicts" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"dir":"","name":"\u7167\u7247"}' "$PHONE/api/files/mkdir")" 409
 L=$(curl "${D[@]}" "$PHONE/api/files?path=")

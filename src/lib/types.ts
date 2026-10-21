@@ -91,6 +91,10 @@ export interface HostOverview {
   port: number;
   addresses: Address[];
   shared_root: string;
+  /** Why the shared folder cannot be used right now: its disk is not connected, or the folder was moved or deleted. */
+  shared_root_unavailable: "disk" | "folder" | null;
+  /** The folder chosen in Settings, while it is unavailable and `shared_root` stands in for it. */
+  preferred_root: string | null;
   ca_fingerprint: string;
   /** The local CA's name, as iPhone settings list it. */
   ca_name: string;
@@ -101,6 +105,15 @@ export interface HostOverview {
   chat_retention_days: number;
   /** Debug-level logging; resets when LanShare restarts. */
   verbose_logging: boolean;
+}
+
+/** Launch at login, as macOS reports it (macOS 13+; "unsupported" elsewhere). */
+export type LoginItemState = "unsupported" | "notInstalled" | "off" | "on" | "needsApproval";
+
+export interface LoginItemInfo {
+  state: LoginItemState;
+  /** Offer it once, after the first pairing. */
+  suggest?: boolean;
 }
 
 export interface PairRequestResponse {

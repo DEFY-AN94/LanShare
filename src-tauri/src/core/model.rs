@@ -106,6 +106,10 @@ pub struct HostOverview {
     pub port: u16,
     pub addresses: Vec<Address>,
     pub shared_root: String,
+    /// Why the shared folder cannot be used right now ("disk" or "folder"), if it cannot.
+    pub shared_root_unavailable: Option<crate::core::paths::Unavailable>,
+    /// The folder chosen in Settings while it is unavailable and `shared_root` stands in for it.
+    pub preferred_root: Option<String>,
     pub ca_fingerprint: String,
     /// The CA's name as iPhone settings list it.
     pub ca_name: String,

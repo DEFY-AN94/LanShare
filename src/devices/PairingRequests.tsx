@@ -1,15 +1,30 @@
 import { useEffect, useState } from "react";
+import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { api } from "../lib/api";
 import { events } from "../lib/events";
-import type { PairRequest } from "../lib/types";
+import type { LoginItemInfo, PairRequest } from "../lib/types";
+
+/** After the first pairing, offer launch at login once (it stays the user's choice). */
+async function suggestLoginItem(confirm: ReturnType<typeof useDialog>["confirm"]) {
+  const info = await api.get<LoginItemInfo>("/api/host/login-item");
+  if (!info.suggest) return;
+  const yes = await confirm({
+    title: "登录 Mac 时自动启动 LanShare？",
+    message: "这样手机随时都能连上电脑。LanShare 会在菜单栏里运行，不打开窗口；以后可以在设置里更改。",
+    confirmText: "自动启动",
+    cancelText: "暂不",
+  });
+  await (yes ? api.post("/api/host/login-item", { on: true }) : api.post("/api/host/login-item/suggested"));
+}
 
 /** Host-wide modal that asks to approve each incoming pairing request. */
 export function PairingRequests() {
   const [queue, setQueue] = useState<PairRequest[]>([]);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
+  const dialog = useDialog();
 
   useEffect(() => {
     api
@@ -36,6 +51,7 @@ export function PairingRequests() {
     setBusy(true);
     try {
       await api.post(`/api/host/pairing/requests/${encodeURIComponent(current.id)}/${approve ? "approve" : "reject"}`);
+      if (approve) void suggestLoginItem(dialog.confirm).catch(() => undefined);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {

@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useState, type MouseEvent } from "react";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { copyText } from "../lib/clipboard";
@@ -80,9 +80,17 @@ interface BubbleProps {
   isHost: boolean;
   onMediaLoad: () => void;
   onShare: (m: Message) => void;
+  /** Opens the message's actions (copy, delete). */
+  onActions: (m: Message) => void;
 }
 
-export const MessageBubble = memo(function MessageBubble({ message: m, mine, isHost, onMediaLoad, onShare }: BubbleProps) {
+/** A tap on the bubble opens its actions, but not a tap on a link or one that ends a text selection. */
+function tapOpensActions(e: MouseEvent): boolean {
+  if ((e.target as HTMLElement).closest("a")) return false;
+  return !window.getSelection()?.toString();
+}
+
+export const MessageBubble = memo(function MessageBubble({ message: m, mine, isHost, onMediaLoad, onShare, onActions }: BubbleProps) {
   const toast = useToast();
   const [imgFailed, setImgFailed] = useState(false);
   const title = formatDayTime(m.created_at);
@@ -92,7 +100,7 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
     const longOrCode = text.includes("\n") && /[{};<>=]|^\s{2,}/m.test(text);
     return (
       <div className={`msg-row ${mine ? "mine" : "theirs"}`}>
-        <div className={`bubble ${longOrCode ? "bubble-mono" : ""}`} title={title}>
+        <div className={`bubble ${longOrCode ? "bubble-mono" : ""}`} title={title} onClick={(e) => tapOpensActions(e) && onActions(m)}>
           <LinkedText text={text} isHost={isHost} />
         </div>
         <CopyButton text={text} />
@@ -131,9 +139,9 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
             </span>
           </button>
         )}
-        {file.exists && (
-          <div className="file-actions">
-            {isHost ? (
+        <div className="file-actions">
+          {file.exists &&
+            (isHost ? (
               <button className="link-btn" onClick={() => void run(hostReveal(file.path))}>
                 在文件夹中显示
               </button>
@@ -148,9 +156,11 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
                   </button>
                 )}
               </>
-            )}
-          </div>
-        )}
+            ))}
+          <button className="link-btn link-muted" onClick={() => onActions(m)}>
+            删除
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -164,6 +174,7 @@ interface PendingProps {
 
 export function PendingBubble({ item, onRetry, onDiscard }: PendingProps) {
   const failed = item.status === "failed";
+  const waiting = item.status === "waiting";
   const size = item.file?.size ?? 0;
   const pct = size ? Math.min(100, Math.round((item.loaded / size) * 100)) : 0;
   return (
@@ -179,9 +190,9 @@ export function PendingBubble({ item, onRetry, onDiscard }: PendingProps) {
             <span className="file-card-body">
               <span className="file-card-name">{item.file?.name}</span>
               <span className="file-card-meta">
-                {failed ? formatBytes(size) : `${formatBytes(item.loaded)} / ${formatBytes(size)}`}
+                {failed || waiting ? formatBytes(size) : `${formatBytes(item.loaded)} / ${formatBytes(size)}`}
               </span>
-              {!failed && (
+              {!failed && !waiting && (
                 <span className="progress">
                   <span style={{ width: `${pct}%` }} />
                 </span>
@@ -194,8 +205,16 @@ export function PendingBubble({ item, onRetry, onDiscard }: PendingProps) {
         {failed ? (
           <>
             <button className="pending-action text-danger" onClick={() => onRetry(item.client_id)} title={item.error}>
-              <Icon name="refresh" size={14} /> {item.retryable === false ? `发送失败：${item.error ?? ""}` : "发送失败，点按重试"}
+              <Icon name="refresh" size={14} />{" "}
+              {item.retryable === false ? `发送失败：${item.error ?? ""}` : item.error ? `发送失败：${item.error}（点按重试）` : "发送失败，点按重试"}
             </button>
+            <button className="pending-action" aria-label="删除" onClick={() => onDiscard(item.client_id)}>
+              <Icon name="x" size={16} />
+            </button>
+          </>
+        ) : waiting ? (
+          <>
+            <span className="muted">等待连接…</span>
             <button className="pending-action" aria-label="删除" onClick={() => onDiscard(item.client_id)}>
               <Icon name="x" size={16} />
             </button>

@@ -1,9 +1,11 @@
 //! The LanShare server: everything except the desktop window.
 
 pub mod auth;
+pub mod awake;
 pub mod bridge;
 pub mod config;
 pub mod db;
+pub mod disk;
 pub mod error;
 pub mod events;
 mod guard;
@@ -49,6 +51,9 @@ pub struct StartOptions {
     pub port: Option<u16>,
     /// Fixed loopback port (0 = any free port).
     pub local_port: u16,
+    /// Replaces the free-space reserve uploads must leave (bytes). The
+    /// headless runner sets it for tests on full disks; the app never does.
+    pub upload_reserve: Option<u64>,
 }
 
 pub struct ServerHandle {
@@ -108,8 +113,10 @@ fn pick_host_name(computer_name: Option<&str>, hostname: &str) -> String {
 }
 
 /// Opens the configured shared folder, falling back to ~/LanShare when it is
-/// missing (unplugged drive, unmounted share) or unsafe to expose.
-fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &std::path::Path) -> Result<Sandbox> {
+/// missing (unplugged drive, unmounted share) or unsafe to expose. Also
+/// returns the configured folder when ~/LanShare only stands in for it until
+/// it is back.
+fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &std::path::Path) -> Result<(Sandbox, Option<PathBuf>)> {
     let default = home.join("LanShare");
     let configured = config.shared_root.clone();
     let usable = if configured == default {
@@ -135,17 +142,19 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
             }
         }
     };
-    let sandbox = match usable {
-        Some(sb) => sb,
+    let (sandbox, preferred) = match usable {
+        Some(sb) => (sb, None),
         None => {
             let sb = Sandbox::new(&default).with_context(|| format!("create {}", default.display()))?;
             if configured == default || unsafe_root_reason(&configured, home, data_dir).is_some() {
                 config.shared_root = sb.root().to_path_buf();
+                (sb, None)
+            } else {
+                (sb, Some(configured))
             }
-            sb
         }
     };
-    Ok(sandbox.with_deny(&[data_dir.to_path_buf()]))
+    Ok((sandbox.with_deny(&[data_dir.to_path_buf()]), preferred))
 }
 
 /// Starts both listeners. Must run inside a tokio runtime.
@@ -160,7 +169,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     if let Some(port) = opts.port {
         config.port = port;
     }
-    let sandbox = open_shared_folder(&mut config, &opts.home_dir, &opts.data_dir)?;
+    let (sandbox, preferred_root) = open_shared_folder(&mut config, &opts.home_dir, &opts.data_dir)?;
     if let Err(e) = config.save(&opts.data_dir) {
         tracing::warn!("could not save config: {e}");
     }
@@ -188,6 +197,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
         home_dir: opts.home_dir.clone(),
         config,
         sandbox,
+        preferred_root,
         local_token: util::random_token(),
         local_port,
         lan_port,
@@ -195,6 +205,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
         bridge,
         host_name,
         addresses,
+        upload_reserve: opts.upload_reserve,
     });
 
     let lan_app = routes::lan_router(state.clone());
@@ -225,6 +236,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
 
     tokio::spawn(watch_network(state.clone()));
     tokio::spawn(prune_messages(state.clone()));
+    tokio::spawn(watch_shared_root(state.clone()));
     watch_shared_folder(&state);
     let root = state.sandbox().root().to_path_buf();
     tokio::task::spawn_blocking(move || transfer::sweep_tree(&root, 4));
@@ -277,6 +289,34 @@ pub fn watch_shared_folder(state: &Shared) {
             }
         }
     });
+}
+
+/// Notices the shared folder's disk being unplugged or reconnected while
+/// LanShare runs, and the folder chosen in Settings coming back after
+/// startup had to use the default one.
+async fn watch_shared_root(state: Shared) {
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        tick.tick().await;
+        // On a network share that went away a check can block for a long
+        // time; the next one waits for it.
+        let st = state.clone();
+        let Ok((reopened, now)) = tokio::task::spawn_blocking(move || (st.reopen_preferred_root(), st.sandbox().check_root())).await else {
+            continue;
+        };
+        if reopened {
+            tracing::info!("the shared folder chosen in Settings is back; using it again");
+        }
+        let changed = state.note_root_status(now);
+        if reopened || (changed && now.is_ok()) {
+            // The previous watcher stopped with its folder.
+            watch_shared_folder(&state);
+            state.emit_files_changed("");
+        }
+        if reopened && !changed {
+            state.emit(Audience::Host, "shared_root", &json!({}));
+        }
+    }
 }
 
 /// Which listing a change on disk refreshes, and whether only the host may

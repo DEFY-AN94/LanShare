@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Chat } from "../chat/Chat";
+import { startOutbox } from "../chat/store";
 import { ActionSheet } from "../components/ActionSheet";
 import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
@@ -10,6 +11,7 @@ import { FileBrowser } from "../files/FileBrowser";
 import { api } from "../lib/api";
 import { events, type ConnState } from "../lib/events";
 import { navigate, replaceRoute, useHashRoute } from "../lib/route";
+import { clearConversationData } from "../lib/storage";
 import type { Me, Message } from "../lib/types";
 import { CertGuide } from "../pair/CertGuide";
 
@@ -39,6 +41,15 @@ export function DeviceApp({ me }: { me: Me }) {
     if (!route.length) replaceRoute("chat");
   }, [route.length]);
 
+  // Texts queued before iOS reloaded the page go out even if the chat tab is never opened.
+  useEffect(() => startOutbox(), []);
+
+  // In the Home Screen app, ask iOS not to clear drafts and unsent messages when space runs low.
+  useEffect(() => {
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone;
+    if (standalone) void navigator.storage?.persist?.().catch(() => undefined);
+  }, []);
+
   useEffect(
     () =>
       events.on("msg", (d) => {
@@ -60,6 +71,7 @@ export function DeviceApp({ me }: { me: Me }) {
     if (!ok) return;
     try {
       await api.post("/api/me/unpair");
+      clearConversationData();
       window.location.replace("/");
     } catch (e) {
       toast((e as Error).message, "error");
@@ -67,6 +79,8 @@ export function DeviceApp({ me }: { me: Me }) {
   };
 
   const offline = conn === "offline" || conn === "paused" || conn === "unauthorized";
+  // Messages can still be written and queued while the computer is unreachable.
+  const chatOffline = conn === "offline" || conn === "paused";
 
   return (
     <div className="device app-viewport">
@@ -98,7 +112,16 @@ export function DeviceApp({ me }: { me: Me }) {
       </header>
 
       <main className="device-main">
-        {tab === "chat" && <Chat deviceId={null} isHost={false} disabled={offline} emptyHint="在这里给电脑发消息或文件" />}
+        {tab === "chat" && (
+          <Chat
+            deviceId={null}
+            isHost={false}
+            disabled={conn === "unauthorized"}
+            offline={chatOffline}
+            canTrashFiles={me.can_write}
+            emptyHint="在这里给电脑发消息或文件"
+          />
+        )}
         {tab === "files" && <FileBrowser path={route.slice(1).join("/")} isHost={false} disabled={offline} onNavigate={(p) => navigate("files", ...p.split("/"))} />}
         {tab === "cert" && (
           <div className="page">

@@ -19,11 +19,15 @@ use crate::core::state::Shared;
 use crate::core::util::{now_ms, random_hex, random_token, sha256_hex};
 
 pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
+    let shown = |p: &std::path::Path| crate::core::paths::shell_path(p).display().to_string();
+    let sandbox = state.sandbox();
     Json(HostOverview {
         host_name: state.host_name.clone(),
         port: state.lan_port,
         addresses: state.addresses(),
-        shared_root: crate::core::paths::shell_path(state.sandbox().root()).display().to_string(),
+        shared_root: shown(sandbox.root()),
+        shared_root_unavailable: sandbox.check_root().err(),
+        preferred_root: state.preferred_root().as_deref().map(shown),
         ca_fingerprint: state.tls.ca_fingerprint(),
         ca_name: state.tls.ca_name(),
         paused: state.is_paused(),
@@ -224,7 +228,7 @@ mod tests {
 
 /// Opens with the default app; launchable files are revealed in the folder instead.
 pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
-    let path = state.sandbox().resolve_existing(&b.path)?;
+    let path = state.usable_sandbox()?.resolve_existing(&b.path)?;
     let bridge = state.bridge.clone();
     // Covers app bundles too (directories named *.app).
     let reveal = is_launchable(&path);
@@ -236,7 +240,7 @@ pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiRe
 }
 
 pub async fn reveal(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<StatusCode> {
-    let path = state.sandbox().resolve_existing(&b.path)?;
+    let path = state.usable_sandbox()?.resolve_existing(&b.path)?;
     let bridge = state.bridge.clone();
     tokio::task::spawn_blocking(move || bridge.reveal_path(&path)).await.map_err(ApiError::internal)?.map_err(|_| shell_failed())?;
     Ok(StatusCode::NO_CONTENT)
@@ -330,9 +334,44 @@ pub async fn set_verbose_logging(Json(b): Json<VerboseBody>) -> Json<Value> {
     Json(json!({ "on": b.on }))
 }
 
+/// Launch at login (macOS 13+). `suggest`: offer it once, after the first pairing.
+pub async fn login_item(State(state): State<Shared>) -> ApiResult<Json<Value>> {
+    let bridge = state.bridge.clone();
+    let current = tokio::task::spawn_blocking(move || bridge.login_item()).await.map_err(ApiError::internal)?;
+    Ok(Json(json!({ "state": current, "suggest": current == "off" && !state.login_item_suggested() })))
+}
+
+#[derive(Deserialize)]
+pub struct LoginItemBody {
+    on: bool,
+}
+
+pub async fn set_login_item(State(state): State<Shared>, Json(b): Json<LoginItemBody>) -> ApiResult<Json<Value>> {
+    state.mark_login_item_suggested();
+    let bridge = state.bridge.clone();
+    let current = tokio::task::spawn_blocking(move || bridge.set_login_item(b.on)).await.map_err(ApiError::internal)?.map_err(|e| {
+        tracing::warn!("launch at login could not be changed: {e}");
+        ApiError::conflict("macOS 没有接受这个设置，请到「系统设置 › 通用 › 登录项」里查看")
+    })?;
+    Ok(Json(json!({ "state": current })))
+}
+
+/// "Not now" on the one-time suggestion.
+pub async fn dismiss_login_item_suggestion(State(state): State<Shared>) -> StatusCode {
+    state.mark_login_item_suggested();
+    StatusCode::NO_CONTENT
+}
+
+/// Opens System Settings › General › Login Items (to allow LanShare there).
+pub async fn open_login_item_settings(State(state): State<Shared>) -> ApiResult<StatusCode> {
+    let bridge = state.bridge.clone();
+    tokio::task::spawn_blocking(move || bridge.open_login_item_settings()).await.map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn clear_messages(State(state): State<Shared>) -> ApiResult<StatusCode> {
-    state.db.clear_messages()?;
-    state.mark_pruned(now_ms());
-    state.emit(Audience::Everyone, "cleared", &json!({}));
+    let (_, through) = state.db.clear_messages()?;
+    state.mark_cleared(through);
+    state.emit(Audience::Everyone, "cleared", &json!({ "through": through }));
     Ok(StatusCode::NO_CONTENT)
 }

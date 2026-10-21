@@ -6,13 +6,14 @@ import { CopyButton } from "../chat/MessageBubble";
 import { api } from "../lib/api";
 import { events } from "../lib/events";
 import { hostOpen, hostOpenUrl } from "../lib/fileActions";
-import type { HostOverview } from "../lib/types";
+import type { HostOverview, LoginItemInfo } from "../lib/types";
 
 // Only opened in the browser when asked: LanShare itself never contacts the internet.
 const RELEASES_URL = "https://github.com/DEFY-AN94/LanShare/releases";
 
 export function SettingsPage() {
   const [info, setInfo] = useState<HostOverview | null>(null);
+  const [loginItem, setLoginItem] = useState<LoginItemInfo | null>(null);
   const dialog = useDialog();
   const toast = useToast();
 
@@ -26,9 +27,30 @@ export function SettingsPage() {
 
   useEffect(() => {
     void load();
-    const offs = ["paused", "resync", "network"].map((name) => events.on(name, () => void load()));
+    const offs = ["paused", "resync", "network", "shared_root"].map((name) => events.on(name, () => void load()));
     return () => offs.forEach((off) => off());
   }, [load]);
+
+  // Launch at login can also be changed in System Settings while this window stays open.
+  useEffect(() => {
+    const refresh = () => void api.get<LoginItemInfo>("/api/host/login-item").then(setLoginItem, () => undefined);
+    refresh();
+    const onVisible = () => document.visibilityState === "visible" && refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  const setLoginItemOn = async (on: boolean) => {
+    try {
+      setLoginItem(await api.post<LoginItemInfo>("/api/host/login-item", { on }));
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
 
   if (!info) return <div className="page">正在读取…</div>;
 
@@ -60,7 +82,7 @@ export function SettingsPage() {
     const ok = await dialog.confirm({
       title: "重置证书？",
       message:
-        "会生成新的根证书和服务器证书，新证书名称末尾的编号会变。已在 iPhone 上安装旧证书的话，需要在「VPN 与设备管理」里删除旧证书并重新安装；已配对的设备不受影响。",
+        "会生成新的根证书和服务器证书，新证书名称末尾的编号会变。已在 iPhone 上安装旧证书的话，需要在「VPN 与设备管理」里删除旧证书并重新安装；手机若一直显示「连接不上电脑」，点那里的「直接从电脑打开」。已配对的设备不受影响。",
       confirmText: "重置",
       danger: true,
     });
@@ -109,14 +131,63 @@ export function SettingsPage() {
         </div>
       </section>
 
+      {loginItem && loginItem.state !== "unsupported" && (
+        <section className="card">
+          <h3 className="card-title">启动</h3>
+          <div className="setting-row">
+            <div>
+              <div className="setting-title">
+                登录时自动启动{loginItem.state === "on" ? "（已打开）" : loginItem.state === "needsApproval" ? "（在系统设置里关着）" : ""}
+              </div>
+              <div className="muted small">
+                {loginItem.state === "on" && "登录 Mac 后 LanShare 会在菜单栏里运行，不打开窗口，手机随时能连上。"}
+                {loginItem.state === "off" && "打开后，登录 Mac 时 LanShare 会自动在菜单栏里运行，手机随时能连上。"}
+                {/* macOS reports an item switched off in System Settings like one still waiting for approval. */}
+                {loginItem.state === "needsApproval" && "登录 Mac 时不会自动启动：LanShare 在「系统设置 › 通用 › 登录项」里是关着的。要打开，请在那里允许 LanShare。"}
+                {loginItem.state === "notInstalled" && "把 LanShare 移到「应用程序」文件夹并从那里打开后，才能设置。"}
+              </div>
+            </div>
+            {loginItem.state === "needsApproval" ? (
+              <button className="btn" onClick={() => void run(api.post("/api/host/login-item/settings"))}>
+                打开系统设置
+              </button>
+            ) : (
+              loginItem.state !== "notInstalled" && (
+                <button className={`btn ${loginItem.state === "on" ? "btn-primary" : ""}`} onClick={() => void setLoginItemOn(loginItem.state !== "on")}>
+                  {loginItem.state === "on" ? "关闭" : "打开"}
+                </button>
+              )
+            )}
+          </div>
+        </section>
+      )}
+
       <section className="card">
         <h3 className="card-title">共享文件夹</h3>
+        {info.preferred_root && (
+          <div className="banner banner-warn banner-block">
+            <Icon name="alert" size={16} />
+            <span>
+              选好的共享文件夹 <code>{info.preferred_root}</code> 在 LanShare 启动时不可用（所在的磁盘可能没有连接），暂时使用下面这个文件夹。重新连接后会自动换回去。
+            </span>
+          </div>
+        )}
+        {info.shared_root_unavailable && (
+          <div className="banner banner-warn banner-block">
+            <Icon name="alert" size={16} />
+            <span>
+              {info.shared_root_unavailable === "disk"
+                ? "这个文件夹现在不可用，所在的磁盘可能没有连接，手机暂时无法发送和浏览文件。重新连接磁盘后会自动恢复，也可以点「更改…」换一个文件夹。"
+                : "这个文件夹不见了，可能被移动、改名或删除了，手机暂时无法发送和浏览文件。放回原处后会自动恢复，也可以点「更改…」换一个文件夹。"}
+            </span>
+          </div>
+        )}
         <div className="setting-row">
           <code className="path ellipsis" title={info.shared_root}>
             {info.shared_root}
           </code>
           <div className="row-actions">
-            <button className="btn" onClick={() => void run(hostOpen(""))}>
+            <button className="btn" disabled={!!info.shared_root_unavailable} onClick={() => void run(hostOpen(""))}>
               打开
             </button>
             <button className="btn" onClick={() => void pickFolder()}>
@@ -151,8 +222,8 @@ export function SettingsPage() {
           );
         })}
         <p className="muted small">
-          连不上时检查：手机和电脑是否在同一个 Wi-Fi；访客网络、公司网络可能禁止设备互访；手机上的 VPN 可能拦截局域网流量；macOS
-          防火墙里要允许 LanShare 接受传入连接（Windows 上还要把当前网络设为「专用网络」）。
+          连不上时检查：手机和电脑是否在同一个 Wi-Fi；电脑是否已睡眠（传输文件时 LanShare 会让电脑保持唤醒）；访客网络、公司网络可能禁止设备互访；手机上的
+          VPN 可能拦截局域网流量；macOS 防火墙里要允许 LanShare 接受传入连接（Windows 上还要把当前网络设为「专用网络」）。
         </p>
       </section>
 

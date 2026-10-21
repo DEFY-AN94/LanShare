@@ -28,6 +28,12 @@ When you upload from **Photo Library** on the iPhone, iOS converts HEIC photos t
 
 Closing the window keeps LanShare running in the background: in the menu bar and Dock on macOS, and in the notification area (system tray) on Windows. The menu bar or tray icon's menu has **打开 LanShare** (Open LanShare), **暂停共享** (Pause sharing) and **退出 LanShare** (Quit LanShare).
 
+When the computer cannot be reached (it is asleep, or the iPhone is on another network), the Home Screen app still opens and keeps trying to connect. Texts you send meanwhile wait on the iPhone and arrive once it reconnects, and an unsent draft survives closing the app. Tap a message to copy or delete it; a deleted message disappears on both sides. Deleting a file message keeps the file on the computer unless you choose to move it to the Trash.
+
+While an upload runs, the iPhone's screen stays on and the computer does not go to sleep. An upload that would leave too little free space on the computer is refused, and the iPhone shows the numbers: LanShare always leaves 5% of the disk free, at least 2 GB and at most 20 GB.
+
+Settings › **启动** (Startup) can start LanShare when you log in to the Mac, hidden in the menu bar. It is off by default, and LanShare suggests it once after your first pairing. macOS lists it under System Settings › General › Login Items.
+
 LanShare never checks for updates itself. Settings › **查看新版本** (Check for new version) opens the **Releases** page in your browser, where each release lists what changed, both installers and their checksums.
 
 ## Windows
@@ -69,7 +75,7 @@ The end-to-end API test pairs a fake phone, so run it against a throwaway headle
 
 ```bash
 mkdir -p .dev-data
-npm run headless -- --data .dev-data/smoke --shared .dev-data/smoke-share --local-port 53299 > .dev-data/headless.log 2>&1 &
+npm run headless -- --data .dev-data/smoke --shared .dev-data/smoke-share --local-port 53299 --upload-reserve-mb 0 > .dev-data/headless.log 2>&1 &
 # wait until the log shows "Press Ctrl+C" (the first build takes a while), then:
 PORT=$(grep -o 'listening on port [0-9]*' .dev-data/headless.log | grep -o '[0-9]*$')
 PHONE_OVERRIDE=https://127.0.0.1:$PORT scripts/api_smoke.sh .

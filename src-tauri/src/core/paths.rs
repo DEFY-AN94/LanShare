@@ -28,6 +28,25 @@ impl std::fmt::Display for PathError {
     }
 }
 
+/// Why the shared folder cannot be used right now (see [`Sandbox::check_root`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unavailable {
+    /// Its disk is not there: an unplugged drive or an unmounted share.
+    Disk,
+    /// Its disk is there but the folder is not: moved, renamed or deleted.
+    Folder,
+}
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unavailable::Disk => write!(f, "电脑上的共享文件夹现在不可用，所在的磁盘可能没有连接"),
+            Unavailable::Folder => write!(f, "电脑上的共享文件夹不见了，可能被移动、改名或删除了"),
+        }
+    }
+}
+
 impl From<io::Error> for PathError {
     fn from(e: io::Error) -> Self {
         if e.kind() == io::ErrorKind::NotFound {
@@ -47,6 +66,8 @@ pub struct Sandbox {
     root_canon: PathBuf,
     /// Places inside the root that must never be served (LanShare's own data).
     deny: Vec<PathBuf>,
+    /// The disk the root was on when it was opened (Unix device ID).
+    dev: Option<u64>,
 }
 
 impl Sandbox {
@@ -59,10 +80,31 @@ impl Sandbox {
     /// Opens a folder that must already exist (never creates it).
     pub fn existing(root: &Path) -> io::Result<Self> {
         let root_canon = std::fs::canonicalize(root)?;
-        if !root_canon.is_dir() {
+        let meta = std::fs::metadata(&root_canon)?;
+        if !meta.is_dir() {
             return Err(io::Error::new(io::ErrorKind::NotADirectory, "not a folder"));
         }
-        Ok(Self { root: friendly(&root_canon), root_canon, deny: Vec::new() })
+        Ok(Self { root: friendly(&root_canon), root_canon, deny: Vec::new(), dev: device_of(&meta) })
+    }
+
+    /// Whether the root is still there. Checked before anything is written:
+    /// a root that went away is never rebuilt while LanShare runs. With its
+    /// disk unplugged the path would be recreated on another disk (on macOS
+    /// under /Volumes, where it is refused), and a folder the user moved or
+    /// renamed would be replaced by an empty one.
+    pub fn check_root(&self) -> Result<(), Unavailable> {
+        if std::fs::metadata(&self.root_canon).is_ok_and(|m| m.is_dir()) {
+            return Ok(());
+        }
+        Err(missing_root_cause(&self.root_canon, self.dev))
+    }
+
+    /// Tests: as if the root were a drive of its own, so that once it is gone
+    /// what is left above it is on another disk.
+    #[cfg(all(test, unix))]
+    pub fn on_its_own_disk(mut self) -> Self {
+        self.dev = self.dev.map(|d| d.wrapping_add(1));
+        self
     }
 
     /// Adds paths (e.g. the app data dir) that stay off-limits even if they
@@ -135,10 +177,15 @@ impl Sandbox {
     }
 
     /// Ensures `<root>/<name>` exists as a directory (used for 收件箱 / 已发送).
+    /// Creates that one folder only, never the root above it (see `check_root`).
     pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, PathError> {
         validate_segment(name)?;
         let p = self.root.join(name);
-        std::fs::create_dir_all(&p)?;
+        if let Err(e) = std::fs::create_dir(&p)
+            && !(e.kind() == io::ErrorKind::AlreadyExists && p.is_dir())
+        {
+            return Err(e.into());
+        }
         let canon = std::fs::canonicalize(&p)?;
         self.check(&canon)?;
         if !canon.is_dir() {
@@ -155,6 +202,32 @@ impl Sandbox {
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
         Some(parts.join("/"))
+    }
+}
+
+/// Why a root that is gone went away. Its disk is gone when nothing above it
+/// is left (a Windows drive letter or network share), or when what is left
+/// is on another disk (the /Volumes folder an unplugged Mac drive was in).
+fn missing_root_cause(root: &Path, dev: Option<u64>) -> Unavailable {
+    let Some(above) = root.ancestors().skip(1).find_map(|p| std::fs::metadata(p).ok()) else {
+        return Unavailable::Disk;
+    };
+    match (dev, device_of(&above)) {
+        (Some(was), Some(now)) if was != now => Unavailable::Disk,
+        _ => Unavailable::Folder,
+    }
+}
+
+fn device_of(meta: &std::fs::Metadata) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(meta.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
     }
 }
 
@@ -372,6 +445,20 @@ mod tests {
         // A symlink that stays inside the root is fine.
         std::os::unix::fs::symlink(sb.root().join("docs"), sb.root().join("inner")).unwrap();
         assert!(sb.resolve_file("inner/a.txt").is_ok());
+    }
+
+    #[test]
+    fn a_root_that_went_away_is_reported_not_rebuilt() {
+        let (_d, sb) = sandbox();
+        assert_eq!(sb.check_root(), Ok(()));
+        assert!(sb.ensure_subdir("收件箱").is_ok());
+        std::fs::remove_dir_all(sb.root()).unwrap();
+        assert_eq!(sb.check_root(), Err(Unavailable::Folder), "its disk is still there");
+        assert!(sb.ensure_subdir("收件箱").is_err());
+        assert!(!sb.root().exists(), "the root must not be recreated");
+        // What is left above the root is on another disk than the root was: unplugged.
+        #[cfg(unix)]
+        assert_eq!(missing_root_cause(&sb.root_canon, sb.dev.map(|d| d.wrapping_add(1))), Unavailable::Disk);
     }
 
     #[test]

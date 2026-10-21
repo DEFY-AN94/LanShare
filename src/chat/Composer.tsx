@@ -2,24 +2,58 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { usePhotoTip } from "../components/PhotoTip";
 import { useToast } from "../components/Toast";
+import { loadLocal, removeLocal, saveLocal } from "../lib/storage";
+import { openPicker } from "../lib/wakeLock";
 
 interface Props {
   disabled?: boolean;
+  /** Not connected: messages are queued and sent once the connection is back. */
+  offline?: boolean;
   placeholder?: string;
+  /** Which conversation's draft this is. */
+  draftKey: string;
+  /** Keep the draft in localStorage too (the phone), not only in memory. */
+  persistDraft?: boolean;
   onSendText: (text: string) => void;
   onSendFiles: (files: File[]) => void;
 }
 
 const MAX_TEXT = 100_000;
 const coarsePointer = () => window.matchMedia("(pointer: coarse)").matches;
+/** Drafts survive switching tabs or conversations. */
+const drafts = new Map<string, string>();
+const storageKey = (key: string) => `draft.${key}`;
 
-export function Composer({ disabled, placeholder = "输入消息", onSendText, onSendFiles }: Props) {
-  const [text, setText] = useState("");
+function initialDraft(key: string, persist: boolean): string {
+  return drafts.get(key) ?? (persist ? loadLocal<string>(storageKey(key), "") : "");
+}
+
+export function Composer({ disabled, offline, placeholder = "输入消息", draftKey, persistDraft = false, onSendText, onSendFiles }: Props) {
+  const [text, setText] = useState(() => initialDraft(draftKey, persistDraft));
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const photoTip = usePhotoTip(() => fileRef.current?.click());
+  const photoTip = usePhotoTip(() => openPicker(fileRef.current));
   const toast = useToast();
   const canPaste = typeof navigator.clipboard?.readText === "function";
+
+  // Keep the draft: in memory at once, on the phone also in storage (briefly
+  // delayed while typing, at once when the composer goes away).
+  useEffect(() => {
+    drafts.set(draftKey, text);
+    if (!persistDraft) return;
+    const save = () => (text ? saveLocal(storageKey(draftKey), text) : removeLocal(storageKey(draftKey)));
+    const t = window.setTimeout(save, 300);
+    // iOS may end the page soon after it is hidden.
+    const onHide = () => document.visibilityState === "hidden" && save();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", save);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", save);
+      save();
+    };
+  }, [text, draftKey, persistDraft]);
 
   // Auto-grow up to ~6 lines.
   useEffect(() => {
@@ -74,7 +108,7 @@ export function Composer({ disabled, placeholder = "输入消息", onSendText, o
         className="composer-input"
         rows={1}
         value={text}
-        placeholder={disabled ? "已断开连接" : placeholder}
+        placeholder={disabled ? "已断开连接" : offline ? "未连接：消息会在连上后发出" : placeholder}
         disabled={disabled}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {

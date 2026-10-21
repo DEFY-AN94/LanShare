@@ -1,6 +1,8 @@
 //! Desktop shell: starts the server, shows it in a window, adds a tray icon.
 
 pub mod core;
+#[cfg(target_os = "macos")]
+mod login_item;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,7 +28,35 @@ pub fn init_logging() {
     crate::core::logging::init();
 }
 
+/// Command-line flag for a start without a window (also for the Windows Run key).
+const BACKGROUND_ARG: &str = "--background";
+
+/// Why LanShare starts with only its menu bar / tray icon, or `None` for a
+/// normal start. On macOS this must run at the top of `setup`, while the
+/// launch's Apple event is still current.
+fn hidden_start_reason() -> Option<&'static str> {
+    if std::env::args().any(|a| a == BACKGROUND_ARG) {
+        return Some(BACKGROUND_ARG);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if login_item::launched_at_login() {
+            return Some("login item");
+        }
+        if login_item::opened_soon_after_login() {
+            return Some("soon after login");
+        }
+    }
+    None
+}
+
 fn show_main_window(app: &AppHandle) {
+    // After a hidden start the app has no Dock icon and is hidden.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let _ = app.show();
+    }
     if let Some(w) = app.get_webview_window(MAIN) {
         let _ = w.unminimize();
         let _ = w.show();
@@ -71,15 +101,37 @@ impl HostBridge for TauriBridge {
     fn show_window(&self) {
         show_main_window(&self.app);
     }
+
+    #[cfg(target_os = "macos")]
+    fn login_item(&self) -> &'static str {
+        let state = login_item::state();
+        // The user may have changed it in System Settings since the last look.
+        login_item::sync_relaunch_on_login(state == login_item::LoginItem::On);
+        state.as_str()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_login_item(&self, on: bool) -> Result<&'static str, String> {
+        let result = login_item::set(on);
+        tracing::info!("launch at login set to {on}: {result:?}; {}", login_item::diagnostics());
+        result.map(login_item::LoginItem::as_str)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_login_item_settings(&self) {
+        login_item::open_system_settings();
+    }
 }
 
-fn create_window(app: &AppHandle, server: &ServerHandle) -> tauri::Result<()> {
+fn create_window(app: &AppHandle, server: &ServerHandle, visible: bool) -> tauri::Result<()> {
     let url: Url = server.login_url().parse().expect("valid loopback url");
     let origin = url.origin();
     let nav_app = app.clone();
     let popup_app = app.clone();
     WebviewWindowBuilder::new(app, MAIN, WebviewUrl::External(url))
         .title("LanShare")
+        // Hidden after a login launch; the page still loads, so opening it later is instant.
+        .visible(visible)
         .inner_size(1080.0, 720.0)
         .min_inner_size(820.0, 560.0)
         .center()
@@ -162,7 +214,11 @@ pub fn run() {
     init_logging();
     let app = tauri::Builder::default()
         // Must be first: a second launch just focuses the running window.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if !argv.iter().any(|a| a == BACKGROUND_ARG) {
+                show_main_window(app);
+            }
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         // The page has no IPC rights, so the plugin's JS link interception must stay off.
@@ -177,13 +233,37 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // First: on macOS the login-item flag is only readable right now.
+            let hidden_reason = hidden_start_reason();
+            let hidden = hidden_reason.is_some();
+            #[cfg(target_os = "macos")]
+            let launch_event = login_item::launch_event_text();
             let data_dir = app.path().app_data_dir()?;
             let home_dir = app.path().home_dir()?;
             let bridge = Arc::new(TauriBridge { app: app.handle().clone() });
-            let opts = StartOptions { data_dir, home_dir, shared_root: None, port: None, local_port: 0 };
+            let opts = StartOptions { data_dir, home_dir, shared_root: None, port: None, local_port: 0, upload_reserve: None };
             let server = tauri::async_runtime::block_on(crate::core::start(opts, bridge))?;
-            create_window(app.handle(), &server)?;
+            create_window(app.handle(), &server, !hidden)?;
             create_tray(app, server.state.clone())?;
+            #[cfg(target_os = "macos")]
+            {
+                if hidden {
+                    // Menu bar icon only: no Dock icon until the window opens,
+                    // and the app does not keep focus at login.
+                    let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    let _ = app.handle().hide();
+                }
+                tauri::async_runtime::spawn_blocking(move || {
+                    let state = login_item::state();
+                    login_item::sync_relaunch_on_login(state == login_item::LoginItem::On);
+                    // e.g. "launch at login: on; hidden start: Some("login item"); launch event: aevt/oapp prdt=lgit"
+                    tracing::info!(
+                        "launch at login: {}; hidden start: {hidden_reason:?}; launch event: {launch_event}; {}",
+                        state.as_str(),
+                        login_item::diagnostics()
+                    );
+                });
+            }
             app.manage(server);
             Ok(())
         })

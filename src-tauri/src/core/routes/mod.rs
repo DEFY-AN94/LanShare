@@ -14,7 +14,7 @@ use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderValue, header};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::Response;
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use super::auth::{csrf_guard, lan_guard, local_guard, local_login, require_host, require_session};
@@ -38,6 +38,9 @@ fn api(state: &Shared) -> Router<Shared> {
         .route("/api/host/clear-messages", post(host::clear_messages))
         .route("/api/host/chat-retention", post(host::set_chat_retention))
         .route("/api/host/logs/open", post(host::open_logs))
+        .route("/api/host/login-item", get(host::login_item).post(host::set_login_item))
+        .route("/api/host/login-item/suggested", post(host::dismiss_login_item_suggestion))
+        .route("/api/host/login-item/settings", post(host::open_login_item_settings))
         .route("/api/host/logs/verbose", post(host::set_verbose_logging))
         .route_layer(from_fn(require_host));
 
@@ -47,10 +50,12 @@ fn api(state: &Shared) -> Router<Shared> {
         .route("/api/events", get(session::events))
         .route("/api/messages", get(messages::list).post(messages::send))
         .route("/api/messages/upload", post(messages::upload))
+        .route("/api/messages/{id}", delete(messages::delete))
         .route("/api/messages/{id}/file", get(messages::file))
         .route("/api/files", get(files::list))
         .route("/api/files/download", get(files::download))
         .route("/api/files/upload", post(files::upload))
+        .route("/api/upload-check", get(files::upload_check))
         .route("/api/files/mkdir", post(files::mkdir))
         .route("/api/files/rename", post(files::rename))
         .route("/api/files/delete", post(files::delete))

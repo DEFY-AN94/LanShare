@@ -1,6 +1,6 @@
 [package]
 name = "lanshare"
-version = "0.1.0"
+version = "0.2.0"
 description = "LAN-only messaging and file sharing between your phone and computer"
 authors = ["defyan94"]
 edition = "2024"
@@ -64,5 +64,10 @@ tempfile = "3.27.0"
 [target."cfg(unix)".dependencies]
 libc = "0.2.190"
 
+[target."cfg(target_os = \"macos\")".dependencies]
+# Already in Cargo.lock through tao/wry; used directly for launch at login (SMAppService).
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_System_Power"] }

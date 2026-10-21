@@ -5,6 +5,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::path::Path;
 use std::sync::Mutex;
 
+use super::util::now_ms;
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
@@ -26,11 +28,28 @@ CREATE TABLE IF NOT EXISTS messages (
   file_size INTEGER,
   mime TEXT,
   created_at INTEGER NOT NULL,
-  file_root TEXT
+  file_root TEXT,
+  file_created INTEGER
 );
 CREATE INDEX IF NOT EXISTS messages_by_device ON messages(device_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id
   ON messages(device_id, from_host, client_id) WHERE client_id IS NOT NULL;
+-- Client ids of deleted messages (no content): a retry that arrives later,
+-- such as a phone's queued text, is refused instead of bringing it back.
+CREATE TABLE IF NOT EXISTS deleted_messages (
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  from_host INTEGER NOT NULL,
+  client_id TEXT NOT NULL,
+  deleted_at INTEGER NOT NULL,
+  PRIMARY KEY (device_id, from_host, client_id)
+);
+-- Ids of single deleted messages (no content): event streams that open
+-- later, from a phone that was away, start with them, also after a restart.
+CREATE TABLE IF NOT EXISTS deleted_ids (
+  message_id INTEGER PRIMARY KEY,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  deleted_at INTEGER NOT NULL
+);
 "#;
 
 #[derive(Clone, Debug)]
@@ -58,6 +77,9 @@ pub struct MessageRow {
     pub created_at: i64,
     /// Shared-folder root the attachment was saved under (absolute path).
     pub file_root: Option<String>,
+    /// When the attachment's file was created (ms): tells it apart from a
+    /// later file that took the same name, while edits to it keep it.
+    pub file_created: Option<i64>,
 }
 
 pub struct NewMessage<'a> {
@@ -72,6 +94,7 @@ pub struct NewMessage<'a> {
     pub mime: Option<&'a str>,
     pub created_at: i64,
     pub file_root: Option<&'a str>,
+    pub file_created: Option<i64>,
 }
 
 pub struct Db {
@@ -79,7 +102,7 @@ pub struct Db {
 }
 
 const DEVICE_COLS: &str = "id, name, token_hash, can_write, created_at, last_seen_at";
-const MESSAGE_COLS: &str = "id, device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root";
+const MESSAGE_COLS: &str = "id, device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root, file_created";
 
 fn device_from(row: &Row) -> rusqlite::Result<DeviceRow> {
     Ok(DeviceRow {
@@ -106,6 +129,7 @@ fn message_from(row: &Row) -> rusqlite::Result<MessageRow> {
         mime: row.get(9)?,
         created_at: row.get(10)?,
         file_root: row.get(11)?,
+        file_created: row.get(12)?,
     })
 }
 
@@ -124,11 +148,12 @@ impl Db {
         // cannot be read back out of the database file.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
         conn.execute_batch(SCHEMA)?;
-        // Databases created before attachments remembered their root.
-        let has_root: i64 =
-            conn.query_row("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'file_root'", [], |r| r.get(0))?;
-        if has_root == 0 {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN file_root TEXT;")?;
+        // Databases created before attachments remembered their root and their file.
+        for (column, kind) in [("file_root", "TEXT"), ("file_created", "INTEGER")] {
+            let has: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = ?1", params![column], |r| r.get(0))?;
+            if has == 0 {
+                conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {column} {kind};"))?;
+            }
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
@@ -223,8 +248,8 @@ impl Db {
     pub fn insert_message(&self, m: &NewMessage) -> Result<(MessageRow, bool)> {
         let conn = self.conn();
         let inserted = conn.execute(
-            "INSERT OR IGNORE INTO messages (device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR IGNORE INTO messages (device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root, file_created)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 m.device_id,
                 m.from_host as i64,
@@ -236,7 +261,8 @@ impl Db {
                 m.file_size,
                 m.mime,
                 m.created_at,
-                m.file_root
+                m.file_root,
+                m.file_created
             ],
         )?;
         let row = if inserted > 0 {
@@ -312,21 +338,79 @@ impl Db {
             .optional()?)
     }
 
-    pub fn clear_messages(&self) -> Result<usize> {
-        let conn = self.conn();
-        let n = conn.execute("DELETE FROM messages", [])?;
-        Self::purge(&conn);
-        Ok(n)
-    }
-
-    /// Deletes messages created before `before` (ms); used by automatic cleanup.
-    pub fn delete_messages_before(&self, before: i64) -> Result<usize> {
-        let conn = self.conn();
-        let n = conn.execute("DELETE FROM messages WHERE created_at < ?1", params![before])?;
+    /// Deletes the messages `filter` selects, remembering their client ids
+    /// (see `deleted_messages`) and, with `with_ids`, their ids (`deleted_ids`).
+    fn delete_where(&self, filter: &str, p: &[&dyn rusqlite::ToSql], with_ids: bool) -> Result<usize> {
+        let now = now_ms();
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            &format!(
+                "INSERT OR IGNORE INTO deleted_messages (device_id, from_host, client_id, deleted_at)
+                 SELECT device_id, from_host, client_id, {now} FROM messages WHERE client_id IS NOT NULL AND ({filter})"
+            ),
+            p,
+        )?;
+        if with_ids {
+            tx.execute(
+                &format!("INSERT OR IGNORE INTO deleted_ids (message_id, device_id, deleted_at) SELECT id, device_id, {now} FROM messages WHERE {filter}"),
+                p,
+            )?;
+        }
+        let n = tx.execute(&format!("DELETE FROM messages WHERE {filter}"), p)?;
+        tx.commit()?;
         if n > 0 {
             Self::purge(&conn);
         }
         Ok(n)
+    }
+
+    /// Deletes one message (its attachment file is left alone).
+    pub fn delete_message(&self, id: i64) -> Result<bool> {
+        Ok(self.delete_where("id = ?1", params![id], true)? > 0)
+    }
+
+    /// Deletes every message so far; returns how many, and the highest id
+    /// among them. A clear is passed on as that id (`Config::cleared_through`),
+    /// which also covers the single deletes before it. A message that arrives
+    /// meanwhile has a higher id and stays.
+    pub fn clear_messages(&self) -> Result<(usize, i64)> {
+        let through: i64 = self.conn().query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |r| r.get(0))?;
+        let n = self.delete_where("id <= ?1", params![through], false)?;
+        self.conn().execute("DELETE FROM deleted_ids WHERE message_id <= ?1", params![through])?;
+        Ok((n, through))
+    }
+
+    /// Deletes messages created before `before` (ms); used by automatic cleanup.
+    pub fn delete_messages_before(&self, before: i64) -> Result<usize> {
+        self.delete_where("created_at < ?1", params![before], false)
+    }
+
+    /// The most recent `limit` single deletes, oldest first: all of them, or one device's.
+    pub fn deleted_ids(&self, device_id: Option<&str>, limit: usize) -> Result<Vec<i64>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT message_id FROM (SELECT message_id, deleted_at FROM deleted_ids WHERE ?1 IS NULL OR device_id = ?1
+             ORDER BY deleted_at DESC, message_id DESC LIMIT ?2) ORDER BY deleted_at, message_id",
+        )?;
+        let rows = stmt.query_map(params![device_id, limit as i64], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        Ok(rows)
+    }
+
+    /// Whether a message with this client id was deleted.
+    pub fn was_deleted(&self, device_id: &str, from_host: bool, client_id: &str) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM deleted_messages WHERE device_id = ?1 AND from_host = ?2 AND client_id = ?3)",
+            params![device_id, from_host as i64, client_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Forgets deletions older than `before` (ms): no retry or returning phone comes that late.
+    pub fn forget_deleted_before(&self, before: i64) -> Result<usize> {
+        let conn = self.conn();
+        let n = conn.execute("DELETE FROM deleted_messages WHERE deleted_at < ?1", params![before])?;
+        Ok(n + conn.execute("DELETE FROM deleted_ids WHERE deleted_at < ?1", params![before])?)
     }
 
     /// Shared-folder roots that chat attachments were saved under.
@@ -367,6 +451,7 @@ mod tests {
             mime: None,
             created_at: 10,
             file_root: None,
+            file_created: None,
         }
     }
 
@@ -433,6 +518,12 @@ mod tests {
         assert!(db.delete_device("d2").unwrap());
         assert!(!on_disk(removed_device));
 
+        let (one, _) = db.insert_message(&text("d1", None, "MARKER-ONE-MESSAGE")).unwrap();
+        db.insert_message(&text("d1", None, "neighbour")).unwrap();
+        assert!(db.delete_message(one.id).unwrap());
+        assert!(!db.delete_message(one.id).unwrap(), "already gone");
+        assert!(!on_disk("MARKER-ONE-MESSAGE") && on_disk("neighbour"));
+
         let mut old = text("d1", None, "MARKER-OLD-MESSAGE");
         old.created_at = 5;
         db.insert_message(&old).unwrap();
@@ -462,6 +553,55 @@ mod tests {
         assert!(!on_disk());
         assert_eq!(db.conn().query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         assert!(db.device("d1").unwrap().is_some(), "the data itself is kept");
+    }
+
+    #[test]
+    fn deleted_client_ids_are_remembered() {
+        let db = Db::open_in_memory().unwrap();
+        device(&db, "d1");
+        let (one, _) = db.insert_message(&text("d1", Some("c1"), "a")).unwrap();
+        db.insert_message(&text("d1", Some("c2"), "b")).unwrap();
+        db.insert_message(&text("d1", None, "c")).unwrap();
+        assert!(!db.was_deleted("d1", false, "c1").unwrap());
+        db.delete_message(one.id).unwrap();
+        assert!(db.was_deleted("d1", false, "c1").unwrap());
+        assert_eq!(db.deleted_ids(Some("d1"), 10).unwrap(), [one.id]);
+        assert!(db.deleted_ids(Some("d2"), 10).unwrap().is_empty());
+        assert!(!db.was_deleted("d1", true, "c1").unwrap(), "the computer's own ids are kept apart");
+        db.clear_messages().unwrap();
+        assert!(db.was_deleted("d1", false, "c2").unwrap());
+        assert!(db.deleted_ids(None, 10).unwrap().is_empty(), "a clear is passed on as a cutoff");
+        assert_eq!(db.forget_deleted_before(i64::MAX).unwrap(), 2);
+        // Removing the device forgets them as well.
+        db.insert_message(&text("d1", Some("c3"), "d")).unwrap();
+        db.clear_messages().unwrap();
+        let (four, _) = db.insert_message(&text("d1", Some("c4"), "e")).unwrap();
+        db.delete_message(four.id).unwrap();
+        db.delete_device("d1").unwrap();
+        assert!(!db.was_deleted("d1", false, "c3").unwrap());
+        assert!(db.deleted_ids(None, 10).unwrap().is_empty());
+    }
+
+    /// A database from before attachments kept their folder and time.
+    #[test]
+    fn adds_new_columns_to_an_older_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lanshare.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL, can_write INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_seen_at INTEGER);
+                 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                   from_host INTEGER NOT NULL, client_id TEXT, kind TEXT NOT NULL, text TEXT, file_path TEXT, file_name TEXT, file_size INTEGER, mime TEXT, created_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+        let db = Db::open(&path).unwrap();
+        device(&db, "d1");
+        let mut m = text("d1", None, "x");
+        m.file_root = Some("/shared");
+        m.file_created = Some(42);
+        let (row, _) = db.insert_message(&m).unwrap();
+        assert_eq!((row.file_root.as_deref(), row.file_created), (Some("/shared"), Some(42)));
     }
 
     #[test]

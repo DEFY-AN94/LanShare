@@ -1,6 +1,6 @@
 //! Runs the LanShare server without a window (for development and testing).
 //!
-//! cargo run --example headless -- [--data DIR] [--shared DIR] [--port N] [--local-port N]
+//! cargo run --example headless -- [--data DIR] [--shared DIR] [--port N] [--local-port N] [--upload-reserve-mb N]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,8 +23,10 @@ async fn main() -> anyhow::Result<()> {
     let home_dir = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_else(|| cwd.clone());
     let port = arg(&args, "--port").and_then(|p| p.parse().ok());
     let local_port = arg(&args, "--local-port").and_then(|p| p.parse().ok()).unwrap_or(0);
+    // Tests on a nearly full disk (a CI runner, a dev Mac) would otherwise have every upload refused.
+    let upload_reserve = arg(&args, "--upload-reserve-mb").and_then(|p| p.parse::<u64>().ok()).map(|mb| mb << 20);
 
-    let handle = core::start(StartOptions { data_dir, home_dir, shared_root, port, local_port }, Arc::new(HeadlessBridge)).await?;
+    let handle = core::start(StartOptions { data_dir, home_dir, shared_root, port, local_port, upload_reserve }, Arc::new(HeadlessBridge)).await?;
     println!("LanShare (headless) is running");
     for url in handle.lan_urls() {
         println!("  phone:   {url}");

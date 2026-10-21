@@ -16,6 +16,17 @@ pub trait HostBridge: Send + Sync + 'static {
     fn pick_folder(&self) -> Option<PathBuf>;
     /// Brings the main window to the front (e.g. for a pairing request).
     fn show_window(&self) {}
+    /// Launch at login as the Settings switch shows it: "unsupported",
+    /// "notInstalled", "off", "on" or "needsApproval". Blocking.
+    fn login_item(&self) -> &'static str {
+        "unsupported"
+    }
+    /// Turns launch at login on or off; returns the state afterwards. Blocking.
+    fn set_login_item(&self, _on: bool) -> Result<&'static str, String> {
+        Ok("unsupported")
+    }
+    /// Opens the system page where launch at login can be allowed again.
+    fn open_login_item_settings(&self) {}
 }
 
 /// Used by `examples/headless.rs` and tests.

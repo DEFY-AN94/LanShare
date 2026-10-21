@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use super::paths::PathError;
+use super::paths::{PathError, Unavailable};
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -62,6 +62,13 @@ impl From<std::io::Error> for ApiError {
             StorageFull => ApiError::new(StatusCode::INSUFFICIENT_STORAGE, "电脑磁盘空间不足"),
             _ => ApiError::internal(e),
         }
+    }
+}
+
+/// 503: the phone offers 重试, which works once the disk or folder is back.
+impl From<Unavailable> for ApiError {
+    fn from(u: Unavailable) -> Self {
+        ApiError::new(StatusCode::SERVICE_UNAVAILABLE, u.to_string())
     }
 }
 

@@ -1,10 +1,14 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { useDialog } from "../components/Dialog";
 import { ShareSheet } from "../components/ShareSheet";
+import { useToast } from "../components/Toast";
+import { copyText } from "../lib/clipboard";
 import { formatDayTime } from "../lib/format";
 import type { Message } from "../lib/types";
 import { Composer } from "./Composer";
 import { MessageBubble, PendingBubble } from "./MessageBubble";
+import { deleteMessage, keyFor } from "./store";
 import { useConversation } from "./useConversation";
 
 interface Props {
@@ -12,14 +16,20 @@ interface Props {
   deviceId: string | null;
   isHost: boolean;
   disabled?: boolean;
+  /** Not connected right now: messages queue until the connection is back. */
+  offline?: boolean;
+  /** May also move a file message's attachment to the computer's Trash. */
+  canTrashFiles?: boolean;
   header?: ReactNode;
   emptyHint?: string;
 }
 
 const GROUP_GAP_MS = 5 * 60_000;
 
-export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
+export function Chat({ deviceId, isHost, disabled, offline, canTrashFiles = isHost, header, emptyHint }: Props) {
   const conv = useConversation(deviceId);
+  const toast = useToast();
+  const [actionFor, setActionFor] = useState<Message | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const restore = useRef<{ height: number; top: number; firstId: number } | null>(null);
@@ -76,7 +86,7 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
 
   const discard = async (id: string) => {
     const p = conv.pending.find((x) => x.client_id === id);
-    if (p?.kind === "text" && p.status === "failed") {
+    if (p?.kind === "text" && p.status !== "sending") {
       const ok = await dialog.confirm({ title: "删除这条未发送的消息？", message: p.text, confirmText: "删除", danger: true });
       if (!ok) return;
     }
@@ -93,6 +103,41 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
   };
 
   const mine = (m: Message) => (isHost ? m.from_host : !m.from_host);
+
+  const remove = async (m: Message, trashFile: boolean) => {
+    const ok = await dialog.confirm({
+      title: trashFile ? "删除这条消息和文件？" : "删除这条消息？",
+      message: trashFile
+        ? "电脑和手机上的这条消息都会删除，无法恢复；文件会被移到电脑的回收站，可以从回收站恢复。"
+        : `电脑和手机上的这条消息都会删除，无法恢复。${m.kind === "file" ? "文件仍保留在电脑上。" : ""}`,
+      confirmText: "删除",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteMessage(m.id, trashFile);
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
+
+  const actionsFor = (m: Message): SheetAction[] => {
+    const list: SheetAction[] = [];
+    if (m.kind === "text") {
+      list.push({
+        label: "复制",
+        icon: "copy",
+        onSelect: () => void copyText(m.text ?? "").then((ok) => toast(ok ? "已复制" : "复制失败，请长按文字手动复制", ok ? "success" : "error")),
+      });
+      list.push({ label: "删除", icon: "trash", danger: true, onSelect: () => void remove(m, false) });
+    } else {
+      list.push({ label: "删除消息，保留文件", icon: "trash", danger: true, onSelect: () => void remove(m, false) });
+      if (canTrashFiles && m.file?.exists) {
+        list.push({ label: "删除消息，并把文件移到电脑的回收站", icon: "trash", danger: true, onSelect: () => void remove(m, true) });
+      }
+    }
+    return list;
+  };
 
   return (
     <div
@@ -123,7 +168,7 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
           return (
             <Fragment key={m.id}>
               {showTime && <div className="chat-time">{formatDayTime(m.created_at)}</div>}
-              <MessageBubble message={m} mine={mine(m)} isHost={isHost} onMediaLoad={scrollToBottom} onShare={setSharing} />
+              <MessageBubble message={m} mine={mine(m)} isHost={isHost} onMediaLoad={scrollToBottom} onShare={setSharing} onActions={setActionFor} />
             </Fragment>
           );
         })}
@@ -131,8 +176,16 @@ export function Chat({ deviceId, isHost, disabled, header, emptyHint }: Props) {
           <PendingBubble key={p.client_id} item={p} onRetry={conv.retry} onDiscard={(id) => void discard(id)} />
         ))}
       </div>
-      <Composer disabled={disabled} onSendText={sendText} onSendFiles={sendFiles} />
+      <Composer
+        disabled={disabled}
+        offline={offline}
+        draftKey={keyFor(deviceId)}
+        persistDraft={!isHost}
+        onSendText={sendText}
+        onSendFiles={sendFiles}
+      />
       {dragging && <div className="drop-overlay">松开即可发送文件</div>}
+      {actionFor && <ActionSheet actions={actionsFor(actionFor)} onClose={() => setActionFor(null)} />}
       {sharing?.file && (
         <ShareSheet
           url={`/api/messages/${sharing.id}/file`}

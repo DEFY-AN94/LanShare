@@ -16,7 +16,9 @@ use crate::core::error::{ApiError, ApiResult};
 use crate::core::model::{DirListing, FileEntry};
 use crate::core::paths::{Sandbox, sanitize_filename, segments};
 use crate::core::state::{AppState, INBOX_DIR, SENT_DIR, Shared, is_chat_path};
-use crate::core::transfer::{REJECTED_UPLOAD_DRAIN, discard_body, receive_upload, serve_path};
+use crate::core::transfer::{
+    REJECTED_UPLOAD_DRAIN, check_fits, declared_len, discard_body, preflight, receive_upload, serve_path, unless_root_gone, upload_length,
+};
 
 fn require_write(session: &Session) -> ApiResult<()> {
     if session.can_write() { Ok(()) } else { Err(ApiError::forbidden("这台设备只有读取权限")) }
@@ -128,7 +130,7 @@ pub struct PathQuery {
 
 pub async fn list(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>) -> ApiResult<Json<DirListing>> {
     require_visible(&session, &q.path)?;
-    let sandbox = state.sandbox();
+    let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&q.path)?;
     require_visible_at(&session, &state, &dir)?;
     let rel = sandbox.relative(&dir).unwrap_or_default();
@@ -148,7 +150,7 @@ pub async fn list(State(state): State<Shared>, Extension(session): Extension<Ses
 
 pub async fn download(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>, req: Request) -> ApiResult<Response> {
     require_visible(&session, &q.path)?;
-    let sandbox = state.sandbox();
+    let sandbox = state.usable_sandbox()?;
     let path = sandbox.resolve_file(&q.path)?;
     require_visible_at(&session, &state, &path)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
@@ -161,6 +163,10 @@ pub struct UploadQuery {
     #[serde(default)]
     dir: String,
     name: String,
+    /// Chosen by the client per file; a retry sends the same one.
+    upload_id: Option<String>,
+    /// The file's size as the phone sees it (see `upload_length`).
+    size: Option<u64>,
 }
 
 pub async fn upload(
@@ -171,27 +177,65 @@ pub async fn upload(
     body: Body,
 ) -> ApiResult<Json<FileEntry>> {
     let mut body = Some(body);
-    let result = store_upload(&state, &session, &q, &mut body).await;
-    // Left unread only when the upload was rejected up front.
+    let result = store_upload(&state, &session, &q, declared_len(&headers), &mut body).await.map_err(|e| unless_root_gone(&state, e));
+    // Left unread by a retry that already went through, or by a rejection.
     if let Some(rest) = body {
-        discard_body(&headers, rest, REJECTED_UPLOAD_DRAIN).await;
+        discard_body(&headers, rest, if result.is_ok() { u64::MAX } else { REJECTED_UPLOAD_DRAIN }).await;
     }
     result.map(Json)
 }
 
-async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, body: &mut Option<Body>) -> ApiResult<FileEntry> {
+async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, declared: Option<u64>, body: &mut Option<Body>) -> ApiResult<FileEntry> {
     require_write(session)?;
     require_visible(session, &q.dir)?;
-    let sandbox = state.sandbox();
+    let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&q.dir)?;
     require_visible_at(session, state, &dir)?;
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
     require_unreserved(session, &sandbox, &dir, &name)?;
+    let upload_id = super::messages::valid_client_id(q.upload_id.as_deref())?;
+    let who = session.device_id().unwrap_or("host");
+    // A retry whose first attempt already landed (only the response was lost).
+    if let Some(id) = upload_id
+        && let Some(entry) = state.recent_upload(who, id).and_then(|p| entry_for(&sandbox, &p))
+    {
+        return Ok(entry);
+    }
+    let length = upload_length(declared, q.size)?;
+    let mut reservation = preflight(state, &dir, length)?;
     let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
-    let (path, _) = receive_upload(state, session, body, &dir, &name).await?;
+    let (path, _) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut()).await?;
+    if let Some(id) = upload_id {
+        state.remember_upload(who, id, path.clone());
+    }
     let entry = entry_for(&sandbox, &path).ok_or_else(|| ApiError::internal("uploaded file vanished"))?;
     state.emit_files_changed(&sandbox.relative(&dir).unwrap_or_default());
     Ok(entry)
+}
+
+#[derive(Deserialize)]
+pub struct UploadCheckQuery {
+    /// A folder in the shared folder (Files); left out for a chat attachment.
+    dir: Option<String>,
+    size: u64,
+}
+
+/// "Would a file of this size fit?", asked before sending it: 204, or the
+/// same 507 / 413 / 503 the upload itself would get. Reserves nothing.
+pub async fn upload_check(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<UploadCheckQuery>) -> ApiResult<axum::http::StatusCode> {
+    let sandbox = state.usable_sandbox()?;
+    let dir = match q.dir.as_deref() {
+        Some(rel) => {
+            require_write(&session)?;
+            require_visible(&session, rel)?;
+            let dir = sandbox.resolve_dir(rel)?;
+            require_visible_at(&session, &state, &dir)?;
+            dir
+        }
+        None => sandbox.root().to_path_buf(),
+    };
+    check_fits(&state, &dir, q.size)?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -204,7 +248,7 @@ pub struct MkdirBody {
 pub async fn mkdir(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<MkdirBody>) -> ApiResult<Json<FileEntry>> {
     require_write(&session)?;
     require_visible(&session, &b.dir)?;
-    let sandbox = state.sandbox();
+    let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&b.dir)?;
     require_visible_at(&session, &state, &dir)?;
     let name = sanitize_filename(&b.name).ok_or_else(|| ApiError::bad_request("名称无效"))?;
@@ -227,7 +271,7 @@ pub struct RenameBody {
 pub async fn rename(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<RenameBody>) -> ApiResult<Json<FileEntry>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
-    let sandbox = state.sandbox();
+    let sandbox = state.usable_sandbox()?;
     // resolve_entry: renaming a symlink renames the link, not its target.
     let src = sandbox.resolve_entry(&b.path)?;
     let parent = src.parent().ok_or_else(|| ApiError::bad_request("路径无效"))?.to_path_buf();
@@ -282,6 +326,22 @@ pub fn move_to_trash(path: &FsPath) -> Result<(), trash::Error> {
     ctx.delete(path)
 }
 
+/// Moves `target` to the Trash / Recycle Bin; refused where Windows keeps no
+/// Recycle Bin, so nothing is ever deleted for good.
+pub(super) async fn trash(target: std::path::PathBuf) -> ApiResult<()> {
+    #[cfg(windows)]
+    if !has_recycle_bin(&target) {
+        return Err(ApiError::conflict("这个位置（U 盘或网络共享）没有回收站，为避免永久删除，请在电脑上处理这个文件"));
+    }
+    // A fresh thread each time: on Windows the trash crate sets up COM per
+    // thread and aborts if a pooled thread was already initialised differently.
+    tokio::task::spawn_blocking(move || std::thread::spawn(move || move_to_trash(&target)).join())
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(|_| ApiError::internal("trash thread panicked"))?
+        .map_err(|e| ApiError::internal(format!("move to trash failed ({})", trash_failure(&e))))
+}
+
 /// The trash crate's messages quote the path; keep only what kind of failure it was.
 fn trash_failure(e: &trash::Error) -> String {
     match e {
@@ -294,7 +354,7 @@ fn trash_failure(e: &trash::Error) -> String {
 pub async fn delete(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<DeleteBody>) -> ApiResult<Json<Value>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
-    let sandbox = state.sandbox();
+    let sandbox = state.usable_sandbox()?;
     // Deleting a symlink removes the link only (trash keeps the last component).
     let target = sandbox.resolve_entry(&b.path).map_err(|e| match e {
         crate::core::paths::PathError::Invalid if segments(&b.path).is_ok_and(|s| s.is_empty()) => ApiError::bad_request("不能删除共享文件夹本身"),
@@ -305,17 +365,7 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
         require_visible_at(&session, &state, parent)?;
     }
     let parent_rel = target.parent().and_then(|p| sandbox.relative(p)).unwrap_or_default();
-    #[cfg(windows)]
-    if !has_recycle_bin(&target) {
-        return Err(ApiError::conflict("这个位置（U 盘或网络共享）没有回收站，为避免永久删除，请在电脑上处理这个文件"));
-    }
-    // A fresh thread each time: on Windows the trash crate sets up COM per
-    // thread and aborts if a pooled thread was already initialised differently.
-    tokio::task::spawn_blocking(move || std::thread::spawn(move || move_to_trash(&target)).join())
-        .await
-        .map_err(ApiError::internal)?
-        .map_err(|_| ApiError::internal("trash thread panicked"))?
-        .map_err(|e| ApiError::internal(format!("move to trash failed ({})", trash_failure(&e))))?;
+    trash(target).await?;
     state.emit_files_changed(&parent_rel);
     Ok(Json(json!({ "ok": true })))
 }

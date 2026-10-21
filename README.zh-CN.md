@@ -26,6 +26,12 @@
 
 关掉窗口后 LanShare 会继续在后台运行：macOS 上在菜单栏和 Dock，Windows 上在任务栏通知区域（系统托盘）。菜单栏 / 托盘图标的菜单里可以「打开 LanShare」、「暂停共享」或「退出 LanShare」。
 
+电脑连不上时（电脑睡眠了，或 iPhone 不在同一个网络），主屏幕上的 App 照样能打开，并会自己不断重连。这期间发出的文字先存在 iPhone 上，连上后自动送达；没发出的草稿关掉 App 也不会丢。点按一条消息可以复制或删除，删除后两边都会消失。删除文件消息时，文件默认留在电脑上，也可以选择把它移到废纸篓。
+
+上传进行中，iPhone 的屏幕不会熄灭，电脑也不会睡眠。如果上传后电脑剩余空间会太少，上传会被拒绝，iPhone 上会显示具体数字：LanShare 总会给磁盘留出 5% 的空间，至少 2 GB，最多 20 GB。
+
+设置 ›「启动」可以让 LanShare 在登录 Mac 时自动启动，只显示在菜单栏。默认关闭，第一次配对成功后会提示一次。macOS 会把它列在「系统设置 › 通用 › 登录项」里。
+
 LanShare 不会自己检查更新。设置 ›「查看新版本」会用浏览器打开 **Releases** 页面，每个版本都写了改动，并附有两个安装包和校验和。
 
 ## Windows 版
@@ -67,7 +73,7 @@ npx tsc                                           # 前端类型检查
 
 ```bash
 mkdir -p .dev-data
-npm run headless -- --data .dev-data/smoke --shared .dev-data/smoke-share --local-port 53299 > .dev-data/headless.log 2>&1 &
+npm run headless -- --data .dev-data/smoke --shared .dev-data/smoke-share --local-port 53299 --upload-reserve-mb 0 > .dev-data/headless.log 2>&1 &
 # 等日志里出现 "Press Ctrl+C"（第一次编译要等一会儿），再运行：
 PORT=$(grep -o 'listening on port [0-9]*' .dev-data/headless.log | grep -o '[0-9]*$')
 PHONE_OVERRIDE=https://127.0.0.1:$PORT scripts/api_smoke.sh .

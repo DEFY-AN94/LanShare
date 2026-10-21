@@ -16,6 +16,7 @@ use tower::ServiceExt as _;
 use tower_http::services::ServeFile;
 
 use super::auth::Session;
+use super::disk::{self, FAT_MAX_FILE, human_size};
 use super::error::{ApiError, ApiResult};
 use super::paths::unique_path;
 use super::state::Shared;
@@ -107,8 +108,11 @@ pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_nam
         _ => res,
     };
     let (st, sess) = (state.clone(), session.clone());
+    // Lives as long as the body: the computer stays awake until the download ends.
+    let awake = state.awake.hold();
     let mut res: Response = res.map(move |body| {
         let guarded = Body::new(body).into_data_stream().map(move |chunk| {
+            let _ = &awake;
             if st.transfer_allowed(&sess) {
                 chunk.map_err(std::io::Error::other)
             } else {
@@ -203,10 +207,118 @@ pub fn mark_quarantined(path: &Path) {
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn mark_quarantined(_path: &Path) {}
 
+/// The size the client declared for the request body.
+pub fn declared_len(headers: &HeaderMap) -> Option<u64> {
+    headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok())
+}
+
+/// Room an upload in progress holds on the disk. Its length is promised up
+/// front and handed back as the data lands, since the disk's free space
+/// counts it from then on; whatever is left is released when the upload ends.
+pub struct Reservation {
+    state: Shared,
+    /// Promised bytes not yet written.
+    bytes: u64,
+}
+
+impl Reservation {
+    /// `n` more bytes are being written.
+    pub fn landed(&mut self, n: u64) {
+        let n = n.min(self.bytes);
+        if n > 0 {
+            self.bytes -= n;
+            self.state.release_upload(n);
+        }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.state.release_upload(self.bytes);
+    }
+}
+
+fn too_big_for_fat() -> ApiError {
+    ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "保存位置是 FAT32 格式（常见于 U 盘），单个文件不能超过 4 GB")
+}
+
+/// `in_flight`: what uploads already running still have to write.
+fn no_room(available: u64, in_flight: u64, need: u64, reserve: u64) -> ApiError {
+    let running = if in_flight > 0 { format!("（其中 {} 留给正在进行的上传）", human_size(in_flight)) } else { String::new() };
+    ApiError::new(
+        StatusCode::INSUFFICIENT_STORAGE,
+        format!(
+            "电脑磁盘空间不足：还剩 {}{running}，这个文件 {}，还要给电脑留出 {}",
+            human_size(available),
+            human_size(need),
+            human_size(reserve)
+        ),
+    )
+}
+
+/// Refuses an upload before its body is read if it cannot fit: over 4 GB on
+/// a FAT disk, or more than the free space minus the reserve (section 3 of
+/// PLAN.md) and what other uploads in progress still have to write. Call it
+/// before taking the body, so a refusal reaches the client, and pass the
+/// reservation to [`receive_upload`].
+pub fn preflight(state: &Shared, dir: &Path, length: u64) -> ApiResult<Option<Reservation>> {
+    let info = match disk::disk_info(dir) {
+        Ok(info) => info,
+        // Unknown disk: the write itself reports a full disk.
+        Err(_) => return Ok(None),
+    };
+    if info.fat && length > FAT_MAX_FILE {
+        return Err(too_big_for_fat());
+    }
+    let reserve = state.upload_reserve.unwrap_or_else(|| disk::reserve_for(info.total));
+    let mut in_flight = 0;
+    let fits = |reserved: u64| {
+        in_flight = reserved;
+        info.available.saturating_sub(reserved) >= length.saturating_add(reserve)
+    };
+    if !state.try_reserve_upload(length, fits) {
+        return Err(no_room(info.available, in_flight, length, reserve));
+    }
+    Ok(Some(Reservation { state: state.clone(), bytes: length }))
+}
+
+/// The same check without reserving anything: lets a phone ask before it
+/// sends a large file, so a refusal is a clear message rather than a reset.
+pub fn check_fits(state: &Shared, dir: &Path, size: u64) -> ApiResult<()> {
+    preflight(state, dir, size).map(drop)
+}
+
+/// The upload's length: its Content-Length, checked against the file size
+/// the phone put in the URL. On iOS 26.5 and later a picked file can go out
+/// as an empty body (WebKit bug 319985), which must not be saved as a
+/// complete, empty file. An upload with neither is refused: without a length
+/// it could not be held to the free-space reserve.
+pub fn upload_length(declared: Option<u64>, size: Option<u64>) -> ApiResult<u64> {
+    match (declared, size) {
+        (Some(d), Some(s)) if d != s => Err(ApiError::bad_request(format!(
+            "手机发出的数据（{}）和文件大小（{}）不符，请重新选择这个文件发送",
+            human_size(d),
+            human_size(s)
+        ))),
+        (Some(n), _) | (None, Some(n)) => Ok(n),
+        (None, None) => Err(ApiError::new(StatusCode::LENGTH_REQUIRED, "上传没有说明文件大小，请从 LanShare 的页面重新上传")),
+    }
+}
+
 /// Streams the request body into `dir/name` (renamed `name (1)` etc. on
 /// collision). Writes to a hidden temp file first so a half-finished upload
-/// never appears under its real name.
-pub async fn receive_upload(state: &Shared, session: &Session, body: Body, dir: &Path, name: &str) -> ApiResult<(PathBuf, u64)> {
+/// never appears under its real name. `length` is what [`upload_length`]
+/// returned, and `reservation` what [`preflight`] gave before the body was taken.
+pub async fn receive_upload(
+    state: &Shared,
+    session: &Session,
+    body: Body,
+    dir: &Path,
+    name: &str,
+    length: u64,
+    mut reservation: Option<&mut Reservation>,
+) -> ApiResult<(PathBuf, u64)> {
+    let _awake = state.awake.hold();
     let dir_owned = dir.to_path_buf();
     let _ = tokio::task::spawn_blocking(move || sweep_stale_parts(&dir_owned, Duration::from_secs(24 * 3600))).await;
 
@@ -221,19 +333,56 @@ pub async fn receive_upload(state: &Shared, session: &Session, body: Body, dir: 
         }
         let chunk = chunk.map_err(|_| ApiError::bad_request("上传中断"))?;
         total += chunk.len() as u64;
+        if total > length {
+            return Err(ApiError::bad_request("上传的数据比声明的大小多，已取消"));
+        }
+        if let Some(r) = reservation.as_deref_mut() {
+            r.landed(chunk.len() as u64);
+        }
         out.write_all(&chunk).await?;
     }
+    if total != length {
+        return Err(ApiError::bad_request("上传不完整，请重试"));
+    }
     out.flush().await?;
-    drop(out);
+    // On disk before it gets its real name, so a power cut cannot leave a
+    // file that looks complete but is not.
+    out.into_inner().sync_all().await?;
 
     let _guard = state.upload_lock.lock().await;
     let target = unique_path(dir, name);
+    #[cfg(windows)]
+    let created = std::fs::metadata(&tmp.path).and_then(|m| m.created()).ok();
     tokio::fs::rename(&tmp.path, &target).await?;
     tmp.keep = true;
+    #[cfg(windows)]
+    keep_creation_time(&target, created);
     if !session.is_host() {
         mark_quarantined(&target);
     }
     Ok((target, total))
+}
+
+/// Windows file-system tunneling gives a file that takes a name the creation
+/// time of a file that left that name moments before. The upload keeps its
+/// own, so it is never taken for an earlier attachment (`state::same_file`).
+#[cfg(windows)]
+fn keep_creation_time(path: &Path, created: Option<SystemTime>) {
+    use std::os::windows::fs::FileTimesExt;
+    let Some(created) = created else { return };
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+        let _ = file.set_times(std::fs::FileTimes::new().set_created(created));
+    }
+}
+
+/// An upload that failed because the shared folder went away meanwhile (its
+/// disk unplugged mid-transfer) says so, instead of a generic error.
+pub fn unless_root_gone(state: &Shared, e: ApiError) -> ApiError {
+    let disk_trouble = matches!(e.status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND | StatusCode::INTERNAL_SERVER_ERROR);
+    match state.usable_sandbox() {
+        Err(why) if disk_trouble => why.into(),
+        _ => e,
+    }
 }
 
 /// The most of a rejected upload that is read before giving up on the connection.

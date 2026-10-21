@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { api } from "../lib/api";
 import { guessDeviceName } from "../lib/format";
+import { startNewPairing } from "../lib/storage";
 import type { PairRequestResponse, PairStatus } from "../lib/types";
 import { CertGuide } from "./CertGuide";
 
@@ -52,6 +53,9 @@ export function PairPage({ token: initialToken, notPaired }: Props) {
         if (status === "pending") return;
         window.clearInterval(timer.current);
         if (status === "approved") {
+          // A new pairing starts clean: no draft or queued text from an earlier
+          // one, here or in another open tab.
+          startNewPairing();
           setStage("done");
           window.setTimeout(() => window.location.replace("/"), 900);
         } else {

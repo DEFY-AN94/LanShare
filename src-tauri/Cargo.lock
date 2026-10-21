@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "lanshare"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2291,6 +2291,8 @@ dependencies = [
  "libc",
  "mime_guess",
  "notify",
+ "objc2",
+ "objc2-foundation",
  "percent-encoding",
  "qrcode",
  "rcgen",

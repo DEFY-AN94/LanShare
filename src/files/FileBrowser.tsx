@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
@@ -10,8 +10,25 @@ import { api, qs } from "../lib/api";
 import { events } from "../lib/events";
 import { browserDownload, browserPreview, canShareFiles, hostOpen, hostReveal } from "../lib/fileActions";
 import { fileCategory, formatBytes, formatShort, formatSpeed, isPreviewable } from "../lib/format";
+import { loadLocal, saveLocal } from "../lib/storage";
 import type { DirListing, FileEntry } from "../lib/types";
+import { openPicker } from "../lib/wakeLock";
 import { uploads, useUploads } from "./uploads";
+
+type SortBy = "name" | "modified" | "size";
+const SORT_KEY = "files.sort";
+const SORT_LABELS: Record<SortBy, string> = { name: "按名称", modified: "最近修改", size: "按大小" };
+
+/** Folders first, then by the chosen order: name A–Z, newest first, or largest first. */
+function sortEntries(entries: FileEntry[], by: SortBy): FileEntry[] {
+  const byName = (a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+  return [...entries].sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    if (by === "modified") return b.modified - a.modified || byName(a, b);
+    if (by === "size" && !a.is_dir) return b.size - a.size || byName(a, b);
+    return byName(a, b);
+  });
+}
 
 interface Props {
   path: string;
@@ -30,11 +47,33 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   const [sharing, setSharing] = useState<FileEntry | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const photoTip = usePhotoTip(() => fileInput.current?.click());
+  const photoTip = usePhotoTip(() => openPicker(fileInput.current));
   const toast = useToast();
   const dialog = useDialog();
   const pathRef = useRef(path);
   pathRef.current = path;
+  const [sortBy, setSortBy] = useState<SortBy>(() => {
+    const saved = loadLocal<string>(SORT_KEY, "name");
+    return saved === "modified" || saved === "size" ? saved : "name";
+  });
+  const [filter, setFilter] = useState("");
+  const [filterInput, setFilterInput] = useState("");
+  // Pinyin and other input methods: filter only once the word is finished.
+  const composing = useRef(false);
+  // A filter belongs to one folder.
+  useEffect(() => {
+    setFilter("");
+    setFilterInput("");
+  }, [path]);
+  const changeSort = (by: SortBy) => {
+    setSortBy(by);
+    saveLocal(SORT_KEY, by);
+  };
+  const shown = useMemo(() => {
+    if (!listing) return [];
+    const q = filter.trim().toLowerCase();
+    return sortEntries(q ? listing.entries.filter((e) => e.name.toLowerCase().includes(q)) : listing.entries, sortBy);
+  }, [listing, filter, sortBy]);
 
   const load = useCallback(
     async (quiet = false) => {
@@ -202,6 +241,37 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
         </div>
       </div>
 
+      {listing && listing.entries.length > 0 && (
+        <div className="files-filter">
+          <input
+            className="input"
+            type="search"
+            value={filterInput}
+            placeholder="按名称筛选"
+            aria-label="按名称筛选"
+            onChange={(e) => {
+              setFilterInput(e.target.value);
+              if (!composing.current) setFilter(e.target.value);
+            }}
+            onCompositionStart={() => (composing.current = true)}
+            onCompositionEnd={(e) => {
+              composing.current = false;
+              setFilter(e.currentTarget.value);
+            }}
+          />
+          <label>
+            <span className="sr-only">排序</span>
+            <select className="input" value={sortBy} onChange={(e) => changeSort(e.target.value as SortBy)}>
+              {(Object.keys(SORT_LABELS) as SortBy[]).map((k) => (
+                <option key={k} value={k}>
+                  {SORT_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
       <div className="files-list">
         {loading && !listing && <div className="list-hint">正在读取…</div>}
         {error && (
@@ -217,7 +287,8 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
         {listing && listing.entries.length === 0 && (
           <div className="list-hint">{canWrite ? "这个文件夹是空的，点「上传」添加文件" : "这个文件夹是空的"}</div>
         )}
-        {listing?.entries.map((e) => (
+        {listing && listing.entries.length > 0 && shown.length === 0 && <div className="list-hint">没有名称里包含「{filter.trim()}」的项目</div>}
+        {shown.map((e) => (
           <div key={e.path} className="file-row">
             <button className="file-row-main" onClick={() => openEntry(e)}>
               <span className={`file-row-icon ${e.is_dir ? "is-dir" : ""}`}>
@@ -265,10 +336,11 @@ function UploadPanel() {
   const items = useUploads();
   if (!items.length) return null;
   const active = items.filter((i) => i.status === "uploading" || i.status === "queued").length;
+  const failedCount = items.filter((i) => i.status === "failed").length;
   return (
     <div className="upload-panel">
       <div className="upload-panel-head">
-        <span>{active ? `正在上传 ${active} 个文件` : "上传完成"}</span>
+        <span>{active ? `正在上传 ${active} 个文件` : failedCount ? `有 ${failedCount} 个文件没有上传成功` : "上传完成"}</span>
         {active === 0 && (
           <button className="link-btn" onClick={() => uploads.clearFinished()}>
             清除
@@ -289,9 +361,11 @@ function UploadPanel() {
                   {it.status === "failed" && <span className="text-danger">失败</span>}
                 </span>
                 {it.status === "failed" ? (
-                  <button className="link-btn" onClick={() => uploads.retry(it.id)} title={it.error}>
-                    重试
-                  </button>
+                  it.retryable !== false && (
+                    <button className="link-btn" onClick={() => uploads.retry(it.id)}>
+                      重试
+                    </button>
+                  )
                 ) : (
                   it.status !== "done" && (
                     <button className="icon-btn small" aria-label="取消上传" onClick={() => uploads.cancel(it.id)}>
@@ -300,6 +374,7 @@ function UploadPanel() {
                   )
                 )}
               </div>
+              {it.status === "failed" && it.error && <div className="upload-item-error text-danger small">{it.error}</div>}
               {(it.status === "uploading" || it.status === "queued") && (
                 <span className="progress">
                   <span style={{ width: `${pct}%` }} />
