@@ -2,7 +2,7 @@
 
 > A messaging and file-transfer tool for iPhone ↔ computer (macOS / Windows) on the local network. LAN only; nothing goes through any cloud.
 >
-> Document date: 2026-10-21 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 done (PR #4); 15-minute iPhone check passed 2026-10-20; M7 accepted on a real iPhone 2026-10-21 (branch `m7-daily-iphone`, PR #7; see 4.1.3); next: M8 → M9, planned 2026-10-20 (see section 12) · "LanShare" is a working name and can be changed
+> Document date: 2026-10-22 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 done (PR #4); 15-minute iPhone check passed 2026-10-20; M7 accepted on a real iPhone 2026-10-21 and **released as v0.2.0** (PR #7, with #8 and #9; see 4.1.3); next: M8 → M9, planned 2026-10-20 (see section 12); from M8 on, milestones are accepted in the iOS Simulator and real-iPhone checks wait for one pass at the end · "LanShare" is a working name and can be changed
 
 ## 1. Goals and scope
 
@@ -55,6 +55,7 @@
 | Deleting a file message (2026-10-20) | The attachment in 收件箱 (Inbox) / 已发送 (Sent) is kept by default; an option also moves it to the Trash / Recycle Bin | Deleting a message should not silently remove a file that may still matter |
 | Free space during uploads (2026-10-20) | Uploads always leave max(2 GB, 5% of the disk) free, capped at 20 GB and at half the disk (so a small USB stick still takes uploads) | Protects the computer's disk; the refusal shows the real numbers |
 | Launch at login (2026-10-20) | Off by default; suggested once after the first successful pairing | macOS shows a "background item added" notice, so it should be your choice |
+| Testing each milestone (2026-10-22) | From M8 on, a milestone is accepted with the automated tests and in the iOS Simulator. Checks that need the real iPhone go on the "Real iPhone testing, later" list in section 12 and are done in one pass at the end; the Windows checks keep waiting for a Windows PC | A real-device test for every version slowed things down, and the Simulator already finds most problems |
 
 ## 4. Feasibility results (2026-10-15)
 
@@ -494,7 +495,7 @@ A test page and a one-action Shortcut, run on the real iPhone with the LanShare 
 - A fallback that always works: **复制最近收到的文字** (Copy latest received text) in the menu bar / tray menu
 - Send the computer's clipboard to the phone: a tray item, plus an optional global shortcut (none set by default). It goes to the most recent conversation, with a per-device submenu; a screenshot on the clipboard arrives as a PNG under 已发送. The clipboard is read only when you trigger it
 - Launch at login on Windows (Run key) and its cleanup on uninstall (tested later on a Windows PC)
-- Needs from you: approval of `tauri-plugin-global-shortcut`, `tauri-plugin-autostart` and a clipboard crate (which also brings in `image`; `png` is already in the tree through Tauri's menu and tray crates); decisions on the shortcut and the target device; about 30 minutes on the Mac
+- Needs from you: approval of `tauri-plugin-global-shortcut`, `tauri-plugin-autostart` and a clipboard crate (which also brings in `image`; `png` is already in the tree through Tauri's menu and tray crates); decisions on the shortcut and the target device; a few minutes on the Mac where a check needs a person (granting notification permission, clicking a notification). The phone side is accepted in the iOS Simulator
 - Acceptance:
   - With the window hidden, clicking a phone message's notification opens that conversation
   - If the spike passes, **复制** on a 300-character message puts all 300 characters on the clipboard without opening the window; either way, the tray item copies it
@@ -505,7 +506,7 @@ A test page and a one-action Shortcut, run on the real iPhone with the LanShare 
 
 - Connect by computer name (`mymac.local`). Add device also offers a `.local` QR code, with the IP one as a fallback; whether it becomes the default on macOS is decided when M9 starts, after the real-iPhone test passes. A Home Screen icon added from it survives IP changes. When a phone pairs again, the computer can choose **替换这台旧设备** (Replace this old device), so the device keeps its ID and chat history. The listener stays IPv4-only: Safari then falls back to IPv4 at once when `.local` also resolves to an IPv6 address The pairing cookie belongs to one address (seen in the iPhone check), so a phone paired over the IP is not paired at the `.local` address until it pairs there
 - iOS Shortcuts (the 15-minute iPhone check confirmed that a Shortcut reaches LanShare over `.local` and over the IP; iOS asks once per address). A send-only token per device can post messages and files but read nothing. One Shortcut in the share sheet sends text, links, photos and files; an optional second scope, off by default, lets a Shortcut copy the latest text from the computer. The illustrated Chinese recipe keeps the token in a file under On My iPhone (not iCloud Drive) and reads it at run time, so the Shortcut itself holds no secret and does not carry it through iCloud
-- Needs from you: about 45 minutes on the iPhone, including an IP change; decisions on making `.local` the default and on the Shortcuts details
+- Needs from you: decisions on making `.local` the default and on the Shortcuts details. Accepted in the iOS Simulator (it resolves `.local` through the Mac); the real-iPhone parts, including an IP change, go on the "Real iPhone testing, later" list
 - Acceptance:
   - A real iPhone pairs through the `.local` QR code with no warning when the CA is trusted; after the Mac's IP changes, the Home Screen icon reconnects with its chat history
   - Replacing an old device keeps its ID and messages and invalidates the old credential; a phone cannot trigger a replacement (test)
@@ -525,6 +526,13 @@ Windows features are still built, and CI builds and tests every change on Window
 - From M8: clicking a toast, or clicking it later in Action Center, opens that conversation; the toast's **复制** (Copy) and **打开** (Open) buttons; the unread count in the tray tooltip; the tray items that copy the latest text and send the clipboard (a screenshot arrives as a PNG); launch at login (Run key) and its cleanup on uninstall. Record any differences from the Mac
 - From M9: the `.local` URL either works or is not offered
 - Record the results in section 4.2, in the same format as the 4.1.1 table
+
+**Real iPhone testing, later** (decided 2026-10-22: milestones are accepted in the iOS Simulator; one pass on the real iPhone at the end, with the Mac)
+
+Each milestone adds here what the Simulator cannot show. Record the results in section 4.1, in the same format as the 4.1.3 table:
+
+- From M8: text sent from the Mac's clipboard arrives in the phone's chat, and a screenshot arrives as a PNG that opens and saves to Photos
+- From M9: pairing through the `.local` QR code with no warning when the CA is trusted; after the Mac's IP changes, the Home Screen icon reconnects with its chat history; the Shortcut in the share sheet sends a Safari URL, two photos and a PDF from Files, over `.local` and over the IP
 
 **Backlog** (in rough order; each gets planned before it starts)
 
@@ -560,7 +568,7 @@ Windows features are still built, and CI builds and tests every change on Window
   - API integration tests: start a real server in a temporary directory; cover pairing, auth, messages, files, Range and all kinds of error cases
   - Frontend type checking; frontend unit tests (vitest, from M7)
 - **iOS Simulator** (I can run it directly on this Mac): at the end of each milestone, walk through the iPhone web flows and take screenshots to check them
-- **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute iPhone check (done 2026-10-20), and once at the end of M7 and M9
+- **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute iPhone check (done 2026-10-20) and M7 (done 2026-10-21). From M8 on, milestones are accepted in the iOS Simulator, and the real-iPhone checks are done in one pass at the end ("Real iPhone testing, later" in section 12)
 - **Windows PC** (later, with the real iPhone): the "Windows testing, later" list in section 12, in one pass of about 1.5 hours
 - **Security self-review checklist**:
   - Access without a cookie
