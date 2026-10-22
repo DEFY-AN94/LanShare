@@ -58,6 +58,8 @@ export interface Device {
   last_seen_at: number | null;
   online: boolean;
   last_message: Message | null;
+  /** Messages from this device the computer has not read yet. */
+  unread: number;
 }
 
 export interface Address {
@@ -105,6 +107,16 @@ export interface HostOverview {
   chat_retention_days: number;
   /** Debug-level logging; resets when LanShare restarts. */
   verbose_logging: boolean;
+  platform: "macos" | "windows" | "linux" | string;
+  /** Whether the system shows LanShare's notifications. */
+  notifications: "allowed" | "denied" | "notDetermined" | "unavailable" | "unknown";
+  notify_hide_text: boolean;
+  /** The global shortcut that sends the clipboard (e.g. "Control+Alt+Super+KeyV"), if set. */
+  clipboard_shortcut: string | null;
+  /** Why that shortcut could not be registered when LanShare started. */
+  clipboard_shortcut_error: string | null;
+  /** The device the clipboard goes to; null is the most recent conversation. */
+  clipboard_target: string | null;
 }
 
 /** Launch at login, as macOS reports it (macOS 13+; "unsupported" elsewhere). */

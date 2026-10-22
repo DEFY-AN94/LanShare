@@ -12,13 +12,17 @@ use serde_json::{Value, json};
 use crate::core::auth::Session;
 use crate::core::db::DeviceRow;
 use crate::core::error::{ApiError, ApiResult};
+use crate::core::bridge::Withdraw;
 use crate::core::events::Audience;
 use crate::core::model::{DeviceOut, HostOverview, PairRequestOut, PairingSession, PairingUrl};
 use crate::core::paths::{Sandbox, unsafe_root_reason};
 use crate::core::state::Shared;
+use crate::core::quick::{self, shell_failed};
 use crate::core::util::{now_ms, random_hex, random_token, sha256_hex};
 
 pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
+    let bridge = state.bridge.clone();
+    let notifications = tokio::task::spawn_blocking(move || bridge.notifications_state()).await.unwrap_or("unknown");
     let shown = |p: &std::path::Path| crate::core::paths::shell_path(p).display().to_string();
     let sandbox = state.sandbox();
     Json(HostOverview {
@@ -35,7 +39,102 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         network_warning: state.network_warning(),
         chat_retention_days: state.chat_retention_days(),
         verbose_logging: crate::core::logging::verbose(),
+        platform: std::env::consts::OS,
+        notifications,
+        notify_hide_text: state.notify_hide_text(),
+        clipboard_shortcut: state.clipboard_shortcut(),
+        clipboard_shortcut_error: state.shortcut_error(),
+        clipboard_target: state.clipboard_target(),
     })
+}
+
+#[derive(Deserialize)]
+pub struct ViewingBody {
+    device: Option<String>,
+}
+
+/// The window shows this conversation in front (or none): it counts as read.
+pub async fn set_viewing(State(state): State<Shared>, Json(b): Json<ViewingBody>) -> ApiResult<StatusCode> {
+    let device = b.device.filter(|d| !d.is_empty());
+    if let Some(d) = &device
+        && state.db.device(d)?.is_none()
+    {
+        return Err(ApiError::not_found("设备不存在"));
+    }
+    state.set_viewing(device);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct NotificationsBody {
+    hide_text: bool,
+}
+
+pub async fn set_notifications(State(state): State<Shared>, Json(b): Json<NotificationsBody>) -> ApiResult<StatusCode> {
+    state.set_notify_hide_text(b.hide_text)?;
+    if b.hide_text {
+        // Texts already on screen go as well.
+        state.notifier.forget_all();
+        state.bridge.withdraw_notifications(&Withdraw::All);
+    }
+    state.emit(Audience::Host, "settings", &json!({}));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct ShortcutBody {
+    shortcut: Option<String>,
+}
+
+/// Registers the new global shortcut first; if the system refuses it, the
+/// old one stays and Settings shows why.
+pub async fn set_clipboard_shortcut(State(state): State<Shared>, Json(b): Json<ShortcutBody>) -> ApiResult<StatusCode> {
+    let shortcut = b.shortcut.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if let Some(s) = &shortcut {
+        if s.len() > 64 {
+            return Err(ApiError::bad_request("快捷键无效"));
+        }
+        quick::check_shortcut(s, cfg!(windows)).map_err(ApiError::bad_request)?;
+    }
+    let bridge = state.bridge.clone();
+    let wanted = shortcut.clone();
+    tokio::task::spawn_blocking(move || bridge.set_shortcut(wanted.as_deref()))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(|e| ApiError::conflict(format!("这个快捷键没能设置：{e}")))?;
+    state.set_clipboard_shortcut(shortcut)?;
+    state.emit(Audience::Host, "settings", &json!({}));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct RecordingBody {
+    on: bool,
+}
+
+/// Settings is recording a new shortcut: pressing the current one then
+/// tells Settings instead of sending the clipboard.
+pub async fn set_shortcut_recording(State(state): State<Shared>, Json(b): Json<RecordingBody>) -> StatusCode {
+    state.set_shortcut_recording(b.on);
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+pub struct TargetBody {
+    device: Option<String>,
+}
+
+/// Where the clipboard goes; `None` is the most recent conversation.
+pub async fn set_clipboard_target(State(state): State<Shared>, Json(b): Json<TargetBody>) -> ApiResult<StatusCode> {
+    let device = b.device.filter(|d| !d.is_empty());
+    if let Some(d) = &device
+        && state.db.device(d)?.is_none()
+    {
+        return Err(ApiError::not_found("设备不存在"));
+    }
+    state.set_clipboard_target(device)?;
+    state.emit(Audience::Host, "settings", &json!({}));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn qr_svg(text: &str) -> String {
@@ -109,6 +208,7 @@ pub async fn reject(State(state): State<Shared>, Path(id): Path<String>) -> ApiR
 
 fn device_out(state: &Shared, d: DeviceRow) -> DeviceOut {
     let last_message = state.db.last_message(&d.id).ok().flatten().map(|m| state.message_out(m));
+    let unread = state.unread_counts().get(&d.id).copied().unwrap_or(0);
     DeviceOut {
         online: state.is_online(&d.id),
         id: d.id,
@@ -117,6 +217,7 @@ fn device_out(state: &Shared, d: DeviceRow) -> DeviceOut {
         created_at: d.created_at,
         last_seen_at: d.last_seen_at,
         last_message,
+        unread,
     }
 }
 
@@ -150,6 +251,7 @@ pub async fn delete_device(State(state): State<Shared>, Path(id): Path<String>) 
         return Err(ApiError::not_found("设备不存在"));
     }
     state.revoke(&id);
+    state.device_removed(&id);
     state.emit(Audience::Device(id), "revoked", &json!({}));
     state.emit(Audience::Host, "devices", &json!({}));
     Ok(StatusCode::NO_CONTENT)
@@ -171,72 +273,23 @@ pub struct PathBody {
     path: String,
 }
 
-/// Things the OS would *run* rather than show (apps, scripts, installers,
-/// shortcuts). Files from other devices of this kind are only revealed.
-fn is_launchable(path: &std::path::Path) -> bool {
-    const RISKY: &[&str] = &[
-        "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "fish", "pkg", "mpkg", "jar", "py", "rb", "pl", "php", "scpt",
-        "scptd", "applescript", "workflow", "action", "fileloc", "inetloc", "webloc", "prefpane", "kext", "plugin", "osax", "dylib", "exe",
-        "bat", "cmd", "com", "scr", "msi", "msp", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "lnk", "url", "reg",
-        "cpl", "msc", "appref-ms", "settingcontent-ms", "library-ms", "inf", "pif", "application", "gadget", "desktop", "appimage",
-        // Windows help files can run script; packages install; disk images mount.
-        "chm", "msix", "msixbundle", "appx", "appxbundle", "appinstaller", "iso", "img", "vhd", "vhdx",
-        // More Windows types that run, install or reach out when opened.
-        "pyw", "pyz", "pyzw", "msu", "ppkg", "searchconnector-ms", "search-ms", "website", "scf", "theme", "themepack", "deskthemepack",
-        "diagcab",
-    ];
-    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    if RISKY.contains(&ext.as_str()) {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(m) = std::fs::metadata(path)
-            && m.is_file()
-            && m.permissions().mode() & 0o111 != 0
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// The shell's error text quotes the path or link, which must not reach the log.
-fn shell_failed() -> ApiError {
-    ApiError::internal("the system could not open the item")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_launchable;
-    use std::path::Path;
-
-    #[test]
-    fn files_that_run_or_mount_are_only_revealed() {
-        for name in [
-            "setup.exe", "run.ps1", "link.lnk", "help.chm", "HELP.CHM", "app.msix", "pkg.appx", "x.appinstaller", "disk.iso", "disk.img",
-            "disk.vhd", "disk.vhdx", "Tool.app", "x.sh", "x.pyw", "fix.diagcab", "update.msu", "x.scf", "dark.theme",
-        ] {
-            assert!(is_launchable(Path::new(name)), "{name}");
-        }
-        for name in ["photo.jpg", "doc.pdf", "notes.txt", "movie.mov", "archive.zip"] {
-            assert!(!is_launchable(Path::new(name)), "{name}");
-        }
-    }
-}
-
 /// Opens with the default app; launchable files are revealed in the folder instead.
 pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
     let path = state.usable_sandbox()?.resolve_existing(&b.path)?;
-    let bridge = state.bridge.clone();
-    // Covers app bundles too (directories named *.app).
-    let reveal = is_launchable(&path);
-    tokio::task::spawn_blocking(move || if reveal { bridge.reveal_path(&path) } else { bridge.open_path(&path) })
-        .await
-        .map_err(ApiError::internal)?
-        .map_err(|_| shell_failed())?;
-    Ok(Json(json!({ "action": if reveal { "revealed" } else { "opened" } })))
+    let action = quick::open_or_reveal(&state, path).await?;
+    Ok(Json(json!({ "action": action })))
+}
+
+/// Opens a chat attachment where it was saved, also in an earlier shared folder.
+pub async fn open_message_file(State(state): State<Shared>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    let action = quick::open_attachment(&state, id).await?;
+    Ok(Json(json!({ "action": action })))
+}
+
+/// Shows a chat attachment in its folder, also in an earlier shared folder.
+pub async fn reveal_message_file(State(state): State<Shared>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    quick::reveal_attachment(&state, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn reveal(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<StatusCode> {
@@ -334,10 +387,14 @@ pub async fn set_verbose_logging(Json(b): Json<VerboseBody>) -> Json<Value> {
     Json(json!({ "on": b.on }))
 }
 
-/// Launch at login (macOS 13+). `suggest`: offer it once, after the first pairing.
+/// Launch at login (macOS 13+, Windows). `suggest`: offer it once, after the first pairing.
 pub async fn login_item(State(state): State<Shared>) -> ApiResult<Json<Value>> {
     let bridge = state.bridge.clone();
     let current = tokio::task::spawn_blocking(move || bridge.login_item()).await.map_err(ApiError::internal)?;
+    if current == "off" {
+        // Turned off elsewhere (System Settings, another tool): not put back later.
+        state.set_login_item_chosen(false);
+    }
     Ok(Json(json!({ "state": current, "suggest": current == "off" && !state.login_item_suggested() })))
 }
 
@@ -351,8 +408,13 @@ pub async fn set_login_item(State(state): State<Shared>, Json(b): Json<LoginItem
     let bridge = state.bridge.clone();
     let current = tokio::task::spawn_blocking(move || bridge.set_login_item(b.on)).await.map_err(ApiError::internal)?.map_err(|e| {
         tracing::warn!("launch at login could not be changed: {e}");
-        ApiError::conflict("macOS 没有接受这个设置，请到「系统设置 › 通用 › 登录项」里查看")
+        ApiError::conflict(if cfg!(windows) {
+            "Windows 没有接受这个设置，请到「设置 › 应用 › 启动」里查看"
+        } else {
+            "macOS 没有接受这个设置，请到「系统设置 › 通用 › 登录项」里查看"
+        })
     })?;
+    state.set_login_item_chosen(b.on);
     Ok(Json(json!({ "state": current })))
 }
 
@@ -373,5 +435,8 @@ pub async fn clear_messages(State(state): State<Shared>) -> ApiResult<StatusCode
     let (_, through) = state.db.clear_messages()?;
     state.mark_cleared(through);
     state.emit(Audience::Everyone, "cleared", &json!({ "through": through }));
+    state.notifier.forget_all();
+    state.bridge.withdraw_notifications(&Withdraw::All);
+    state.unread_changed();
     Ok(StatusCode::NO_CONTENT)
 }

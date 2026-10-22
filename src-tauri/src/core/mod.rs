@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod awake;
 pub mod bridge;
+pub mod chat;
 pub mod config;
 pub mod db;
 pub mod disk;
@@ -12,8 +13,10 @@ mod guard;
 pub mod logging;
 pub mod model;
 pub mod net;
+pub mod notices;
 pub mod pairing;
 pub mod paths;
+pub mod quick;
 mod routes;
 pub mod state;
 pub mod tls;

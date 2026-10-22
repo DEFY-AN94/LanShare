@@ -42,6 +42,13 @@ fn api(state: &Shared) -> Router<Shared> {
         .route("/api/host/login-item/suggested", post(host::dismiss_login_item_suggestion))
         .route("/api/host/login-item/settings", post(host::open_login_item_settings))
         .route("/api/host/logs/verbose", post(host::set_verbose_logging))
+        .route("/api/host/viewing", post(host::set_viewing))
+        .route("/api/host/notifications", post(host::set_notifications))
+        .route("/api/host/clipboard/shortcut", post(host::set_clipboard_shortcut))
+        .route("/api/host/clipboard/shortcut/recording", post(host::set_shortcut_recording))
+        .route("/api/host/clipboard/target", post(host::set_clipboard_target))
+        .route("/api/host/messages/{id}/open", post(host::open_message_file))
+        .route("/api/host/messages/{id}/reveal", post(host::reveal_message_file))
         .route_layer(from_fn(require_host));
 
     let authed = Router::new()

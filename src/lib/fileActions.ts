@@ -10,8 +10,20 @@ export async function hostOpen(path: string, notify?: (msg: string) => void) {
   return res;
 }
 
+/** A chat attachment, wherever it was saved (also in an earlier shared folder). */
+export async function hostOpenMessageFile(id: number, notify?: (msg: string) => void) {
+  const res = await api.post<{ action?: string }>(`/api/host/messages/${id}/open`);
+  if (res?.action === "revealed") notify?.("为了安全，程序和脚本类文件不会直接打开，已在文件夹中显示");
+  return res;
+}
+
 export function hostReveal(path: string) {
   return api.post("/api/host/reveal", { path });
+}
+
+/** Shows a chat attachment in its folder, wherever it was saved. */
+export function hostRevealMessageFile(id: number) {
+  return api.post(`/api/host/messages/${id}/reveal`);
 }
 
 export function hostOpenUrl(url: string) {

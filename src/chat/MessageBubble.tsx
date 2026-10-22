@@ -2,7 +2,7 @@ import { memo, useState, type MouseEvent } from "react";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { copyText } from "../lib/clipboard";
-import { browserDownload, browserPreview, canShareFiles, hostOpen, hostOpenUrl, hostReveal } from "../lib/fileActions";
+import { browserDownload, browserPreview, canShareFiles, hostOpenMessageFile, hostOpenUrl, hostRevealMessageFile } from "../lib/fileActions";
 import { fileCategory, formatBytes, formatDayTime, isInlineImage, isPreviewable, splitLinks } from "../lib/format";
 import type { Message } from "../lib/types";
 import type { PendingMessage } from "./useConversation";
@@ -116,7 +116,7 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
 
   const open = () => {
     if (!file.exists) return toast("文件已被移动或删除", "error");
-    if (isHost) return void run(hostOpen(file.path, (m) => toast(m)));
+    if (isHost) return void run(hostOpenMessageFile(m.id, (msg) => toast(msg)));
     if (isPreviewable(file.name)) browserPreview(`${url}?inline=1`);
     else browserDownload(url, file.name);
   };
@@ -142,7 +142,7 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
         <div className="file-actions">
           {file.exists &&
             (isHost ? (
-              <button className="link-btn" onClick={() => void run(hostReveal(file.path))}>
+              <button className="link-btn" onClick={() => void run(hostRevealMessageFile(m.id))}>
                 在文件夹中显示
               </button>
             ) : (

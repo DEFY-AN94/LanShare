@@ -32,7 +32,11 @@ When the computer cannot be reached (it is asleep, or the iPhone is on another n
 
 While an upload runs, the iPhone's screen stays on and the computer does not go to sleep. An upload that would leave too little free space on the computer is refused, and the iPhone shows the numbers: LanShare always leaves 5% of the disk free, at least 2 GB and at most 20 GB.
 
-Settings › **启动** (Startup) can start LanShare when you log in to the Mac, hidden in the menu bar. It is off by default, and LanShare suggests it once after your first pairing. macOS lists it under System Settings › General › Login Items.
+Settings › **启动** (Startup) can start LanShare when you log in to the Mac (or to Windows), hidden in the menu bar or tray. It is off by default, and LanShare suggests it once after your first pairing. macOS lists it under System Settings › General › Login Items.
+
+Notifications for phone messages have buttons. **复制** (Copy) copies the whole text, not just the preview, and **打开** (Open) opens a file; programs and scripts are only shown in their folder. Clicking a notification opens that conversation. When one phone sends many messages in a row, only the first two pop up and the rest are summed up. The unread count shows on the Dock icon (next to the menu bar icon while LanShare has no Dock icon; in the tray tooltip on Windows). Settings › **通知** (Notifications) can leave message text out of notifications.
+
+The menu bar / tray menu also works the other way round: **发送剪贴板到…** (Send clipboard to…) sends the text, screenshot or picture you copied on the computer to a phone (the most recent conversation, or a device you pick), and **复制最近收到的文字** (Copy latest received text) puts the newest text from a phone on the clipboard. Settings › **剪贴板** (Clipboard) can add a global shortcut for sending, with at least two modifier keys, one of them Control or Command (such as ⌃⌥⌘V); none is set by default. LanShare reads the clipboard only when you do one of these.
 
 LanShare never checks for updates itself. Settings › **查看新版本** (Check for new version) opens the **Releases** page in your browser, where each release lists what changed, both installers and their checksums.
 

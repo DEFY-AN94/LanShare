@@ -1,6 +1,6 @@
 // Desktop window layout (the computer itself, signed in via the local token).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Chat } from "../chat/Chat";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
@@ -9,11 +9,11 @@ import { AddDeviceModal } from "../devices/AddDeviceModal";
 import { PairingRequests } from "../devices/PairingRequests";
 import { useDevices } from "../devices/useDevices";
 import { FileBrowser } from "../files/FileBrowser";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { events } from "../lib/events";
 import { formatShort } from "../lib/format";
-import { navigate, replaceRoute, useHashRoute } from "../lib/route";
-import type { Me, Message } from "../lib/types";
+import { navigate, parseHash, replaceRoute, useHashRoute } from "../lib/route";
+import type { Me } from "../lib/types";
 import { SettingsPage } from "../settings/SettingsPage";
 
 const TABS = [
@@ -23,16 +23,28 @@ const TABS = [
   { id: "settings", label: "设置", icon: "settings" },
 ];
 
+function tabOf(route: string[]): string {
+  return TABS.some((t) => t.id === route[0]) ? route[0] : "chat";
+}
+
+/** The conversation a route shows, if any. */
+function conversationOf(route: string[]): string | null {
+  return tabOf(route) === "chat" ? (route[1] ?? null) : null;
+}
+
+/** How long a conversation stays in front before it counts as read. */
+const SETTLE_MS = 400;
+
 export function HostApp({ me }: { me: Me }) {
   const route = useHashRoute();
-  const tab = TABS.some((t) => t.id === route[0]) ? route[0] : "chat";
+  const tab = tabOf(route);
   const [paused, setPaused] = useState(me.paused);
-  const [unread, setUnread] = useState<Record<string, number>>({});
   const { devices } = useDevices();
+  // Counted on the computer (messages after the last one read), so they
+  // survive reloads and match the Dock badge.
+  const unread = useMemo(() => Object.fromEntries((devices ?? []).map((d) => [d.id, d.unread])), [devices]);
   const toast = useToast();
-  const openConv = tab === "chat" ? (route[1] ?? null) : null;
-  const openConvRef = useRef(openConv);
-  openConvRef.current = openConv;
+  const openConv = conversationOf(route);
 
   useEffect(() => {
     if (!route.length) replaceRoute("chat");
@@ -41,24 +53,84 @@ export function HostApp({ me }: { me: Me }) {
   useEffect(() => {
     const offs = [
       events.on("paused", (d) => setPaused(!!(d as { paused?: boolean })?.paused)),
-      events.on("msg", (d) => {
-        const m = d as Message;
-        if (m.from_host) return;
-        if (openConvRef.current === m.device_id && document.hasFocus()) return;
-        setUnread((u) => ({ ...u, [m.device_id]: (u[m.device_id] ?? 0) + 1 }));
+      // How a menu bar or shortcut action went, while this window is in front.
+      events.on("notice", (d) => {
+        const n = d as { text?: string; error?: boolean } | null;
+        if (n?.text) toast(n.text, n.error ? "error" : "success");
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, []);
+  }, [toast]);
 
-  // Opening a conversation (or focusing the window on it) clears its badge.
+  // Tells the computer which conversation is in front: it counts as read,
+  // and its notifications are taken back. Nothing is in front while the
+  // window is hidden or another app is active. Leaving is reported at once;
+  // arriving once it has stayed in front a moment, so a conversation that
+  // only flashes past (a notification click switching away from it) stays
+  // unread. One request at a time, so the computer ends on the latest.
   useEffect(() => {
-    if (!openConv) return;
-    const clear = () => setUnread((u) => (u[openConv] ? { ...u, [openConv]: 0 } : u));
-    clear();
-    window.addEventListener("focus", clear);
-    return () => window.removeEventListener("focus", clear);
-  }, [openConv]);
+    let wanted: string | null = null;
+    let sent: string | null | undefined;
+    let busy = false;
+    let pending: { id: string; timer: number } | null = null;
+    const front = () => (document.visibilityState === "visible" && document.hasFocus() ? conversationOf(parseHash()) : null);
+    const flush = () => {
+      if (busy || wanted === sent) return;
+      busy = true;
+      const device = wanted;
+      let again = true;
+      api
+        .post("/api/host/viewing", { device })
+        .then(
+          () => {
+            sent = device;
+          },
+          (e) => {
+            // A device removed meanwhile is not asked about again; a lost connection is, on the next tick.
+            const refused = e instanceof ApiError && e.status >= 400 && e.status < 500;
+            sent = refused ? device : undefined;
+            again = refused;
+          },
+        )
+        .finally(() => {
+          busy = false;
+          if (again) flush();
+        });
+    };
+    const update = () => {
+      const id = front();
+      if (id === null || id !== pending?.id) {
+        if (pending) window.clearTimeout(pending.timer);
+        pending = null;
+      }
+      if (id === null) {
+        wanted = null;
+      } else if (id !== wanted && !pending) {
+        wanted = null;
+        pending = {
+          id,
+          timer: window.setTimeout(() => {
+            pending = null;
+            if (front() === id) wanted = id;
+            flush();
+          }, SETTLE_MS),
+        };
+      }
+      flush();
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    const offs = [events.on("resync", () => ((sent = undefined), update()))];
+    for (const type of ["focus", "blur", "hashchange"] as const) window.addEventListener(type, update);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      window.clearInterval(timer);
+      if (pending) window.clearTimeout(pending.timer);
+      offs.forEach((off) => off());
+      for (const type of ["focus", "blur", "hashchange"] as const) window.removeEventListener(type, update);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, []);
 
   const totalUnread = Object.values(unread).reduce((a, b) => a + b, 0);
   useEffect(() => {

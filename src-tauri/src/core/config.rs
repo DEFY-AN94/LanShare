@@ -30,6 +30,22 @@ pub struct Config {
     /// purpose. Ids, not times, so a clock that was off cannot hide later messages.
     #[serde(default)]
     pub cleared_through: i64,
+    /// Notifications name the device but leave out the message text.
+    #[serde(default)]
+    pub notify_hide_text: bool,
+    /// Global shortcut that sends the clipboard (a Tauri accelerator such as
+    /// "Control+Alt+Super+KeyV"); none by default.
+    #[serde(default)]
+    pub clipboard_shortcut: Option<String>,
+    /// The device the clipboard goes to; `None` is the most recent conversation.
+    #[serde(default)]
+    pub clipboard_target: Option<String>,
+    /// Launch at login was last turned on in Settings (see `AppState::login_item_chosen`).
+    #[serde(default)]
+    pub login_item: bool,
+    /// The install the last start ran from (see `AppState::note_install`).
+    #[serde(default)]
+    pub last_install: Option<String>,
 }
 
 /// The choices Settings offers for automatic chat cleanup.
@@ -40,13 +56,31 @@ fn default_port() -> u16 {
 }
 
 impl Config {
+    /// The defaults, sharing `shared_root`.
+    pub fn with_root(shared_root: PathBuf) -> Config {
+        Config {
+            shared_root,
+            port: DEFAULT_PORT,
+            paused: false,
+            chat_retention_days: 0,
+            login_item_suggested: false,
+            pruned_before: 0,
+            cleared_through: 0,
+            notify_hide_text: false,
+            clipboard_shortcut: None,
+            clipboard_target: None,
+            login_item: false,
+            last_install: None,
+        }
+    }
+
     fn file(data_dir: &Path) -> PathBuf {
         data_dir.join("config.json")
     }
 
     /// Loads `config.json`, falling back to `~/LanShare` on port 39210.
     pub fn load_or_default(data_dir: &Path, home: &Path) -> Config {
-        let fallback = Config { shared_root: home.join("LanShare"), port: DEFAULT_PORT, paused: false, chat_retention_days: 0, login_item_suggested: false, pruned_before: 0, cleared_through: 0 };
+        let fallback = Config::with_root(home.join("LanShare"));
         match std::fs::read(Self::file(data_dir)) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
                 tracing::warn!("config.json is unreadable ({e}); using defaults");

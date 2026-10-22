@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
@@ -7,6 +7,8 @@ import { api } from "../lib/api";
 import { events } from "../lib/events";
 import { hostOpen, hostOpenUrl } from "../lib/fileActions";
 import type { HostOverview, LoginItemInfo } from "../lib/types";
+import { useDevices } from "../devices/useDevices";
+import { acceleratorFromEvent, displayAccelerator, windowsCode } from "./shortcut";
 
 // Only opened in the browser when asked: LanShare itself never contacts the internet.
 const RELEASES_URL = "https://github.com/DEFY-AN94/LanShare/releases";
@@ -14,6 +16,8 @@ const RELEASES_URL = "https://github.com/DEFY-AN94/LanShare/releases";
 export function SettingsPage() {
   const [info, setInfo] = useState<HostOverview | null>(null);
   const [loginItem, setLoginItem] = useState<LoginItemInfo | null>(null);
+  const [recording, setRecording] = useState(false);
+  const { devices } = useDevices();
   const dialog = useDialog();
   const toast = useToast();
 
@@ -27,9 +31,31 @@ export function SettingsPage() {
 
   useEffect(() => {
     void load();
-    const offs = ["paused", "resync", "network", "shared_root"].map((name) => events.on(name, () => void load()));
+    const offs = ["paused", "resync", "network", "shared_root", "settings"].map((name) => events.on(name, () => void load()));
     return () => offs.forEach((off) => off());
   }, [load]);
+
+  // Notifications can be allowed in System Settings while this window stays open.
+  useEffect(() => {
+    const refresh = () => void api.get<HostOverview>("/api/host/overview").then(setInfo, () => undefined);
+    const onVisible = () => document.visibilityState === "visible" && refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  // After recording with the keyboard, focus goes back to the button that started it.
+  const changeButton = useRef<HTMLButtonElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!recording && refocus.current) {
+      refocus.current = false;
+      changeButton.current?.focus();
+    }
+  }, [recording]);
 
   // Launch at login can also be changed in System Settings while this window stays open.
   useEffect(() => {
@@ -113,6 +139,19 @@ export function SettingsPage() {
   };
 
   const fingerprint = info.ca_fingerprint.match(/.{1,2}/g)?.join(":").toUpperCase() ?? "";
+  const mac = info.platform === "macos";
+  const trayName = mac ? "菜单栏" : "任务栏通知区域";
+  const notifyStatus: Record<string, string> = {
+    allowed: "通知已打开",
+    denied: mac ? "LanShare 的通知被关掉了：在「系统设置 › 通知 › LanShare」里打开" : "LanShare 的通知被关掉了：在 Windows「设置 › 系统 › 通知」里打开",
+    notDetermined: "还没有允许通知：macOS 问的时候点「允许」",
+    unavailable: "这个版本不是从 LanShare.app 运行的，只能显示普通通知（没有按钮）",
+  };
+
+  const setShortcut = async (shortcut: string | null) => {
+    setRecording(false);
+    await run(api.post("/api/host/clipboard/shortcut", { shortcut }), shortcut ? "快捷键已设置" : "快捷键已清除");
+  };
 
   return (
     <div className="page settings">
@@ -137,17 +176,22 @@ export function SettingsPage() {
           <div className="setting-row">
             <div>
               <div className="setting-title">
-                登录时自动启动{loginItem.state === "on" ? "（已打开）" : loginItem.state === "needsApproval" ? "（在系统设置里关着）" : ""}
+                登录时自动启动
+                {loginItem.state === "on" ? "（已打开）" : loginItem.state === "needsApproval" ? (mac ? "（在系统设置里关着）" : "（在启动应用里关着）") : ""}
               </div>
               <div className="muted small">
-                {loginItem.state === "on" && "登录 Mac 后 LanShare 会在菜单栏里运行，不打开窗口，手机随时能连上。"}
-                {loginItem.state === "off" && "打开后，登录 Mac 时 LanShare 会自动在菜单栏里运行，手机随时能连上。"}
+                {loginItem.state === "on" && `登录${mac ? " Mac" : " Windows"} 后 LanShare 会在${trayName}里运行，不打开窗口，手机随时能连上。`}
+                {loginItem.state === "off" && `打开后，登录${mac ? " Mac" : " Windows"} 时 LanShare 会自动在${trayName}里运行，手机随时能连上。`}
                 {/* macOS reports an item switched off in System Settings like one still waiting for approval. */}
-                {loginItem.state === "needsApproval" && "登录 Mac 时不会自动启动：LanShare 在「系统设置 › 通用 › 登录项」里是关着的。要打开，请在那里允许 LanShare。"}
-                {loginItem.state === "notInstalled" && "把 LanShare 移到「应用程序」文件夹并从那里打开后，才能设置。"}
+                {loginItem.state === "needsApproval" &&
+                  (mac
+                    ? "登录 Mac 时不会自动启动：LanShare 在「系统设置 › 通用 › 登录项」里是关着的。要打开，请在那里允许 LanShare。"
+                    : "登录 Windows 时不会自动启动：LanShare 在「设置 › 应用 › 启动」（或任务管理器的「启动应用」）里是关着的。点「打开」可以重新打开。")}
+                {loginItem.state === "notInstalled" &&
+                  (mac ? "把 LanShare 移到「应用程序」文件夹并从那里打开后，才能设置。" : "用安装程序安装 LanShare，并从开始菜单打开后，才能设置。")}
               </div>
             </div>
-            {loginItem.state === "needsApproval" ? (
+            {loginItem.state === "needsApproval" && mac ? (
               <button className="btn" onClick={() => void run(api.post("/api/host/login-item/settings"))}>
                 打开系统设置
               </button>
@@ -161,6 +205,100 @@ export function SettingsPage() {
           </div>
         </section>
       )}
+
+      <section className="card">
+        <h3 className="card-title">通知</h3>
+        {info.notifications !== "unknown" && (
+          <div className={info.notifications === "allowed" ? "muted small" : "banner banner-warn banner-block"}>
+            {info.notifications !== "allowed" && <Icon name="alert" size={16} />}
+            <span>{notifyStatus[info.notifications] ?? ""}</span>
+          </div>
+        )}
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">通知里不显示消息内容{info.notify_hide_text ? "（已打开）" : ""}</div>
+            <div className="muted small">只显示是哪台设备发来的。「复制」按钮仍然复制完整的文字。</div>
+          </div>
+          <button
+            className={`btn ${info.notify_hide_text ? "btn-primary" : ""}`}
+            onClick={() => void run(api.post("/api/host/notifications", { hide_text: !info.notify_hide_text }))}
+          >
+            {info.notify_hide_text ? "关闭" : "打开"}
+          </button>
+        </div>
+        <p className="muted small">
+          手机发来文字时，通知上的「复制」会复制全文；发来文件时，「打开」会用默认程序打开（程序和脚本只在文件夹中显示）。点通知会打开这段对话。同一台设备连续发来很多条时，只弹出前两条，后面的合并显示。
+        </p>
+      </section>
+
+      <section className="card">
+        <h3 className="card-title">剪贴板</h3>
+        <p className="muted small">
+          在{trayName}的 LanShare 图标菜单里选「发送剪贴板到…」，把电脑上复制的文字或截图发到手机；「复制最近收到的文字」把手机发来的最新一段文字放进剪贴板。只有这时才会读取剪贴板。
+        </p>
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">默认发送给</div>
+            <div className="muted small">快捷键和菜单里的「发送剪贴板到…」发给这台设备。</div>
+          </div>
+          <label>
+            <span className="sr-only">默认发送给</span>
+            <select
+              className="input input-small"
+              value={info.clipboard_target ?? ""}
+              onChange={(e) => void run(api.post("/api/host/clipboard/target", { device: e.target.value || null }))}
+            >
+              <option value="">最近聊天的设备</option>
+              {(devices ?? []).map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {info.clipboard_shortcut_error && (
+          <div className="banner banner-warn banner-block">
+            <Icon name="alert" size={16} />
+            <span>LanShare 启动时没能设置快捷键：{info.clipboard_shortcut_error}</span>
+          </div>
+        )}
+        <div className="setting-row">
+          <div>
+            <div className="setting-title">
+              全局快捷键：{info.clipboard_shortcut ? <kbd>{displayAccelerator(info.clipboard_shortcut, info.platform)}</kbd> : "未设置"}
+            </div>
+            <div className="muted small">
+              {recording
+                ? mac
+                  ? "现在按下想用的组合键（至少两个修饰键，其中要有 ⌃ 或 ⌘，例如 ⌃⌥⌘V），按 Esc 取消。"
+                  : "现在按下想用的组合键（至少两个修饰键，其中要有 Ctrl 或 Win，再加一个字母、数字、F1–F12 或空格，例如 Ctrl+Shift+F9；Ctrl+Alt 等同于 AltGr，会挡住打字，不能用），按 Esc 取消。"
+                : "在任何 App 里按下就把剪贴板发出去。其他 App 自己的快捷键检测不到，按了没反应就换一个组合。"}
+            </div>
+          </div>
+          <div className="row-actions">
+            {recording ? (
+              <ShortcutRecorder
+                windows={info.platform === "windows"}
+                onDone={(acc, byKeyboard) => {
+                  refocus.current = byKeyboard;
+                  if (acc) void setShortcut(acc);
+                  else setRecording(false);
+                }}
+              />
+            ) : (
+              <button ref={changeButton} className="btn" onClick={() => setRecording(true)}>
+                {info.clipboard_shortcut ? "更改…" : "设置…"}
+              </button>
+            )}
+            {info.clipboard_shortcut && !recording && (
+              <button className="btn" onClick={() => void setShortcut(null)}>
+                清除
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
 
       <section className="card">
         <h3 className="card-title">共享文件夹</h3>
@@ -315,5 +453,60 @@ export function SettingsPage() {
         </a>
       </p>
     </div>
+  );
+}
+
+/**
+ * Listens for the next key combination; Esc (or leaving the field) cancels.
+ * Meanwhile the current shortcut sends nothing: the system hands it to
+ * LanShare rather than to this page, and pressing it ends the recording.
+ */
+function ShortcutRecorder({ windows, onDone }: { windows: boolean; onDone: (accelerator: string | null, byKeyboard: boolean) => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const done = useRef(onDone);
+  done.current = onDone;
+  // Once only: the button can still lose focus as it goes away.
+  const finished = useRef(false);
+  const finish = (accelerator: string | null, byKeyboard: boolean) => {
+    if (finished.current) return;
+    finished.current = true;
+    done.current(accelerator, byKeyboard);
+  };
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+  const toast = useToast();
+  useEffect(() => {
+    ref.current?.focus();
+    const recording = (on: boolean) => void api.post("/api/host/clipboard/shortcut/recording", { on }).catch(() => undefined);
+    recording(true);
+    // The computer forgets a recording after two minutes (in case this page goes away).
+    const renew = window.setInterval(() => recording(true), 30_000);
+    const off = events.on("shortcut_pressed", () => {
+      toast("这就是现在的快捷键");
+      finishRef.current(null, true);
+    });
+    return () => {
+      window.clearInterval(renew);
+      off();
+      recording(false);
+    };
+  }, [toast]);
+  return (
+    <button
+      ref={ref}
+      className="btn btn-primary"
+      onBlur={() => finish(null, false)}
+      onKeyDown={(e) => {
+        e.preventDefault();
+        if (e.key === "Escape") return finish(null, true);
+        // A Mac registers the key where it sits (e.code); Windows by virtual key.
+        const code = windows ? windowsCode(e.keyCode) : e.code;
+        if (code === null) return;
+        const acc = acceleratorFromEvent({ code, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey, metaKey: e.metaKey }, windows);
+        if (acc) finish(acc, true);
+      }}
+    >
+      请按组合键…
+    </button>
   );
 }

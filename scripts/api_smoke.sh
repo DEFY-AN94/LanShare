@@ -92,6 +92,18 @@ wait
 contains "device receives live msg event" "$(cat "$T/sse.txt")" 'event: msg'
 contains "live event payload" "$(cat "$T/sse.txt")" '"text":"live"'
 
+echo "== M8: unread, notifications, clipboard"
+contains "device list carries unread counts" "$(curl "${H[@]}" "$LOCAL/api/host/devices")" '"unread":'
+check "window reports the conversation in front" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"device\":\"$DEV\"}" "$LOCAL/api/host/viewing")" 204
+check "viewing an unknown device is refused" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"device":"nope"}' "$LOCAL/api/host/viewing")" 404
+check "notification text can be hidden" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"hide_text":false}' "$LOCAL/api/host/notifications")" 204
+check "headless has no global shortcut" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"shortcut":"Control+Shift+KeyV"}' "$LOCAL/api/host/clipboard/shortcut")" 409
+check "a one-modifier shortcut is refused" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"shortcut":"Super+KeyV"}' "$LOCAL/api/host/clipboard/shortcut")" 400
+check "Settings can say it is recording a shortcut" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"on":false}' "$LOCAL/api/host/clipboard/shortcut/recording")" 204
+check "an unknown message has no file to show" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{}' "$LOCAL/api/host/messages/999999/reveal")" 404
+check "a phone cannot set the clipboard target" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"device":null}' "$PHONE/api/host/clipboard/target")" 403
+contains "overview names the platform" "$(curl "${H[@]}" "$LOCAL/api/host/overview")" '"platform":'
+
 echo "== files"
 echo "hello" > "$T/a.txt"
 check "upload to root" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' --data-binary @"$T/a.txt" "$PHONE/api/files/upload?dir=&name=a.txt")" 200

@@ -1,28 +1,32 @@
 //! Desktop shell: starts the server, shows it in a window, adds a tray icon.
 
+mod clipboard;
 pub mod core;
 #[cfg(target_os = "macos")]
 mod login_item;
+#[cfg(windows)]
+mod login_item_windows;
+#[cfg(target_os = "macos")]
+mod mac_notify;
+mod plugin_notify;
+mod shortcut;
+mod tray;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::core::bridge::HostBridge;
-use crate::core::state::Shared;
+use crate::core::bridge::{Clip, HostBridge, MessageNotice, Withdraw};
 use crate::core::{ServerHandle, StartOptions};
 
 const MAIN: &str = "main";
-const MENU_OPEN: &str = "open";
-const MENU_PAUSE: &str = "pause";
-const MENU_QUIT: &str = "quit";
 
 pub fn init_logging() {
     crate::core::logging::init();
@@ -50,17 +54,45 @@ fn hidden_start_reason() -> Option<&'static str> {
     None
 }
 
+/// LanShare has a Dock icon (macOS). After a hidden start it has none until
+/// the window opens, and the unread count shows next to the menu bar icon.
+#[cfg(target_os = "macos")]
+static DOCK_VISIBLE: AtomicBool = AtomicBool::new(true);
+static UNREAD: AtomicU32 = AtomicU32::new(0);
+
 fn show_main_window(app: &AppHandle) {
     // After a hidden start the app has no Dock icon and is hidden.
     #[cfg(target_os = "macos")]
     {
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
         let _ = app.show();
+        if !DOCK_VISIBLE.swap(true, Ordering::SeqCst) {
+            // The count moves from the menu bar to the Dock icon.
+            show_unread(app, UNREAD.load(Ordering::SeqCst));
+        }
     }
     if let Some(w) = app.get_webview_window(MAIN) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+fn show_unread(app: &AppHandle, total: u32) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(w) = app.get_webview_window(MAIN) {
+            let _ = w.set_badge_count((total > 0).then_some(i64::from(total)));
+        }
+        if let Some(tray) = app.tray_by_id(tray::TRAY_ID) {
+            let title = (total > 0 && !DOCK_VISIBLE.load(Ordering::SeqCst)).then(|| total.to_string());
+            let _ = tray.set_title(title);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(tray) = app.tray_by_id(tray::TRAY_ID) {
+        let tip = if total > 0 { format!("LanShare · {total} 条未读") } else { "LanShare".to_string() };
+        let _ = tray.set_tooltip(Some(tip));
     }
 }
 
@@ -71,14 +103,84 @@ struct TauriBridge {
 impl HostBridge for TauriBridge {
     fn notify(&self, title: &str, body: &str) {
         // No banner while the user is already looking at the window.
-        let looking = self
-            .app
+        if self.window_focused() {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        if mac_notify::post_plain(title, body) {
+            return;
+        }
+        plugin_notify::plain(&self.app, title, body);
+    }
+
+    fn notify_message(&self, n: &MessageNotice) {
+        #[cfg(target_os = "macos")]
+        if mac_notify::post(n) {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            plugin_notify::message(&self.app, n);
+        }
+        #[cfg(not(windows))]
+        if !n.quiet {
+            plugin_notify::plain(&self.app, &n.title, &n.body);
+        }
+    }
+
+    fn quiet_updates(&self) -> bool {
+        // Windows toasts cannot be updated in place here (plugin_notify::message).
+        #[cfg(target_os = "macos")]
+        return mac_notify::quiet_updates();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    fn withdraw_notifications(&self, _w: &Withdraw) {
+        #[cfg(target_os = "macos")]
+        mac_notify::withdraw(_w);
+    }
+
+    fn window_focused(&self) -> bool {
+        self.app
             .get_webview_window(MAIN)
             .map(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
-            .unwrap_or(false);
-        if !looking {
-            let _ = self.app.notification().builder().title(title).body(body).show();
+            .unwrap_or(false)
+    }
+
+    fn set_unread(&self, total: u32) {
+        UNREAD.store(total, Ordering::SeqCst);
+        show_unread(&self.app, total);
+    }
+
+    fn show_conversation(&self, device_id: &str) {
+        // The conversation first, then the window: what was open before
+        // never comes to the front, where it would count as read.
+        if let Some(w) = self.app.get_webview_window(MAIN) {
+            // JSON keeps the id a plain string literal in the script.
+            let hash = serde_json::to_string(&format!("#/chat/{device_id}")).unwrap_or_default();
+            let _ = w.eval(format!("location.hash = {hash}"));
         }
+        show_main_window(&self.app);
+    }
+
+    fn notifications_state(&self) -> &'static str {
+        #[cfg(target_os = "macos")]
+        return mac_notify::state();
+        #[cfg(not(target_os = "macos"))]
+        "unknown"
+    }
+
+    fn read_clipboard(&self) -> Clip {
+        clipboard::read()
+    }
+
+    fn write_clipboard_text(&self, text: &str) -> Result<(), String> {
+        clipboard::write_text(text)
+    }
+
+    fn set_shortcut(&self, accelerator: Option<&str>) -> Result<(), String> {
+        shortcut::set(&self.app, accelerator)
     }
 
     fn open_path(&self, path: &Path) -> Result<(), String> {
@@ -121,6 +223,23 @@ impl HostBridge for TauriBridge {
     fn open_login_item_settings(&self) {
         login_item::open_system_settings();
     }
+
+    #[cfg(windows)]
+    fn login_item(&self) -> &'static str {
+        login_item_windows::state()
+    }
+
+    #[cfg(windows)]
+    fn set_login_item(&self, on: bool) -> Result<&'static str, String> {
+        let result = login_item_windows::set(on);
+        tracing::info!("launch at login set to {on}: {}", if result.is_ok() { "ok" } else { "failed" });
+        result
+    }
+
+    #[cfg(windows)]
+    fn open_login_item_settings(&self) {
+        let _ = self.app.opener().open_url(login_item_windows::settings_url(), None::<&str>);
+    }
 }
 
 fn create_window(app: &AppHandle, server: &ServerHandle, visible: bool) -> tauri::Result<()> {
@@ -161,54 +280,6 @@ fn create_window(app: &AppHandle, server: &ServerHandle, visible: bool) -> tauri
     Ok(())
 }
 
-fn create_tray(app: &tauri::App, state: Shared) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, MENU_OPEN, "打开 LanShare", true, None::<&str>)?;
-    let pause = CheckMenuItem::with_id(app, MENU_PAUSE, "暂停共享", true, state.is_paused(), None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "退出 LanShare", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &pause, &sep, &quit])?;
-
-    let menu_state = state.clone();
-    let pause_item = pause.clone();
-    let mut builder = TrayIconBuilder::with_id("main-tray")
-        .tooltip("LanShare")
-        .menu(&menu)
-        .show_menu_on_left_click(cfg!(target_os = "macos"))
-        .on_menu_event(move |app, event| match event.id().as_ref() {
-            MENU_OPEN => show_main_window(app),
-            // The check mark has already flipped when this fires.
-            MENU_PAUSE => menu_state.set_paused(pause_item.is_checked().unwrap_or(false)),
-            MENU_QUIT => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                show_main_window(tray.app_handle());
-            }
-        });
-    // macOS menu bars want a monochrome "template" image; Windows trays use the color icon.
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder.icon(tauri::include_image!("./icons/tray.png")).icon_as_template(true);
-    }
-    #[cfg(not(target_os = "macos"))]
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
-    }
-    builder.build(app)?;
-
-    // Keep the tray check mark in sync when pausing from the window.
-    let mut rx = state.events.subscribe();
-    tauri::async_runtime::spawn(async move {
-        while let Ok(ev) = rx.recv().await {
-            if ev.name == "paused" {
-                let _ = pause.set_checked(ev.data.contains("true"));
-            }
-        }
-    });
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_logging();
@@ -220,6 +291,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         // The page has no IPC rights, so the plugin's JS link interception must stay off.
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
@@ -236,6 +308,10 @@ pub fn run() {
             // First: on macOS the login-item flag is only readable right now.
             let hidden_reason = hidden_start_reason();
             let hidden = hidden_reason.is_some();
+            // Before the server starts: a click on a notification that relaunched
+            // LanShare is delivered right after this returns, and waits until then.
+            #[cfg(target_os = "macos")]
+            mac_notify::install();
             #[cfg(target_os = "macos")]
             let launch_event = login_item::launch_event_text();
             let data_dir = app.path().app_data_dir()?;
@@ -243,13 +319,43 @@ pub fn run() {
             let bridge = Arc::new(TauriBridge { app: app.handle().clone() });
             let opts = StartOptions { data_dir, home_dir, shared_root: None, port: None, local_port: 0, upload_reserve: None };
             let server = tauri::async_runtime::block_on(crate::core::start(opts, bridge))?;
+            // Before the window can ask: an upgrade's uninstaller removed launch at login.
+            #[cfg(windows)]
+            if let Some(stamp) = login_item_windows::install_stamp() {
+                let installed_since = server.state.note_install(&stamp);
+                if server.state.login_item_chosen() && !login_item_windows::restore(installed_since) {
+                    server.state.set_login_item_chosen(false);
+                }
+            }
             create_window(app.handle(), &server, !hidden)?;
-            create_tray(app, server.state.clone())?;
+            tray::create(app, server.state.clone())?;
+            let state = server.state.clone();
+            #[cfg(target_os = "macos")]
+            {
+                let st = state.clone();
+                mac_notify::set_handler(move |r| {
+                    let st = st.clone();
+                    tauri::async_runtime::spawn(async move { core::quick::on_notification(&st, r.action, r.message_id, r.device_id.as_deref()).await });
+                });
+            }
+            plugin_notify::on_action(app.handle(), state.clone());
+            // The saved shortcut; the plugin works on the main thread, so not from here.
+            let (st, handle) = (state.clone(), app.handle().clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Some(saved) = st.clipboard_shortcut()
+                    && let Err(e) = shortcut::set(&handle, Some(&saved))
+                {
+                    tracing::warn!("the saved global shortcut could not be registered");
+                    st.set_shortcut_error(Some(e));
+                }
+                st.unread_changed();
+            });
             #[cfg(target_os = "macos")]
             {
                 if hidden {
                     // Menu bar icon only: no Dock icon until the window opens,
                     // and the app does not keep focus at login.
+                    DOCK_VISIBLE.store(false, Ordering::SeqCst);
                     let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
                     let _ = app.handle().hide();
                 }

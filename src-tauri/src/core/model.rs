@@ -65,6 +65,8 @@ pub struct DeviceOut {
     pub last_seen_at: Option<i64>,
     pub online: bool,
     pub last_message: Option<MessageOut>,
+    /// Messages from this device the computer has not read yet.
+    pub unread: u32,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -120,4 +122,16 @@ pub struct HostOverview {
     pub chat_retention_days: u32,
     /// Debug-level logging is on (it resets when LanShare restarts).
     pub verbose_logging: bool,
+    /// "macos", "windows" or "linux", for platform-specific wording.
+    pub platform: &'static str,
+    /// Whether the system shows LanShare's notifications ("allowed",
+    /// "denied", "notDetermined" or "unknown").
+    pub notifications: &'static str,
+    pub notify_hide_text: bool,
+    /// The global shortcut that sends the clipboard, if one is set.
+    pub clipboard_shortcut: Option<String>,
+    /// Why that shortcut could not be registered when LanShare started.
+    pub clipboard_shortcut_error: Option<String>,
+    /// The device the clipboard goes to; `None` is the most recent conversation.
+    pub clipboard_target: Option<String>,
 }

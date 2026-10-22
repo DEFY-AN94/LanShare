@@ -1420,3 +1420,12 @@ h2 {
   align-items: flex-start;
   line-height: 1.5;
 }
+
+/* M8: the global shortcut in Settings. */
+.settings kbd {
+  font-family: var(--mono);
+  font-size: 0.95em;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}

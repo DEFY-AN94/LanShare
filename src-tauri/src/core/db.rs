@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS devices (
   token_hash TEXT NOT NULL,
   can_write INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
-  last_seen_at INTEGER
+  last_seen_at INTEGER,
+  -- The computer has read this device's messages up to this id (unread counts).
+  read_through INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,6 +156,14 @@ impl Db {
             if has == 0 {
                 conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {column} {kind};"))?;
             }
+        }
+        let has_read_through: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'read_through'", [], |r| r.get(0))?;
+        if has_read_through == 0 {
+            // What was there before counts as read: an upgrade starts with no unread messages.
+            conn.execute_batch(
+                "ALTER TABLE devices ADD COLUMN read_through INTEGER NOT NULL DEFAULT 0;
+                 UPDATE devices SET read_through = (SELECT COALESCE(MAX(id), 0) FROM messages);",
+            )?;
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
@@ -325,6 +335,49 @@ impl Db {
             }
         }
         Ok((rows, has_more))
+    }
+
+    /// Marks a device's messages so far as read on the computer.
+    pub fn mark_read(&self, device_id: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE devices SET read_through = MAX(read_through, (SELECT COALESCE(MAX(id), 0) FROM messages WHERE device_id = ?1)) WHERE id = ?1",
+            params![device_id],
+        )?;
+        Ok(())
+    }
+
+    /// Unread messages from each device: those after the last one read.
+    pub fn unread_counts(&self) -> Result<Vec<(String, u32)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT d.id, (SELECT COUNT(*) FROM messages m WHERE m.device_id = d.id AND m.from_host = 0 AND m.id > d.read_through) FROM devices d",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Devices (id, name), the one with the most recent message first, then
+    /// the newest pairing (the order of the host's conversation list).
+    pub fn devices_by_recent(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.name FROM devices d LEFT JOIN messages m ON m.device_id = d.id
+             GROUP BY d.id ORDER BY MAX(m.id) IS NULL, MAX(m.id) DESC, d.created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The newest text a phone sent to the computer.
+    pub fn latest_received_text(&self) -> Result<Option<MessageRow>> {
+        Ok(self
+            .conn()
+            .query_row(
+                &format!("SELECT {MESSAGE_COLS} FROM messages WHERE from_host = 0 AND kind = 'text' ORDER BY id DESC LIMIT 1"),
+                [],
+                message_from,
+            )
+            .optional()?)
     }
 
     pub fn last_message(&self, device_id: &str) -> Result<Option<MessageRow>> {
@@ -592,16 +645,24 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL, can_write INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_seen_at INTEGER);
                  CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-                   from_host INTEGER NOT NULL, client_id TEXT, kind TEXT NOT NULL, text TEXT, file_path TEXT, file_name TEXT, file_size INTEGER, mime TEXT, created_at INTEGER NOT NULL);",
+                   from_host INTEGER NOT NULL, client_id TEXT, kind TEXT NOT NULL, text TEXT, file_path TEXT, file_name TEXT, file_size INTEGER, mime TEXT, created_at INTEGER NOT NULL);
+                 INSERT INTO devices (id, name, token_hash, created_at) VALUES ('d0', 'old phone', 'h', 1);
+                 INSERT INTO messages (device_id, from_host, kind, text, created_at) VALUES ('d0', 0, 'text', 'before the upgrade', 1);",
             )
             .unwrap();
         let db = Db::open(&path).unwrap();
+        assert_eq!(db.unread_counts().unwrap(), [("d0".to_string(), 0)], "an upgrade starts with nothing unread");
+        db.insert_message(&text("d0", None, "after the upgrade")).unwrap();
+        assert_eq!(db.unread_counts().unwrap(), [("d0".to_string(), 1)]);
         device(&db, "d1");
         let mut m = text("d1", None, "x");
         m.file_root = Some("/shared");
         m.file_created = Some(42);
         let (row, _) = db.insert_message(&m).unwrap();
         assert_eq!((row.file_root.as_deref(), row.file_created), (Some("/shared"), Some(42)));
+        db.mark_read("d0").unwrap();
+        assert!(db.unread_counts().unwrap().contains(&("d0".to_string(), 0)));
+        assert_eq!(db.devices_by_recent().unwrap().iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["d1", "d0"]);
     }
 
     #[test]

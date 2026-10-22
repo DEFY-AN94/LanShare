@@ -12,12 +12,13 @@ use tokio::sync::broadcast;
 
 use super::auth::Session;
 use super::awake::KeepAwake;
-use super::bridge::HostBridge;
+use super::bridge::{HostBridge, Withdraw};
 use super::config::Config;
 use super::db::{Db, MessageRow};
 use super::disk;
 use super::events::{Audience, ServerEvent};
 use super::model::{Address, FileRef, MessageOut};
+use super::notices::Notifier;
 use super::pairing::Pairing;
 use super::paths::{Sandbox, Unavailable, unsafe_root_reason};
 use super::tls::Tls;
@@ -121,7 +122,20 @@ pub struct AppState {
     pub awake: KeepAwake,
     /// Replaces the free-space reserve (tests on full disks); `None` in the app.
     pub upload_reserve: Option<u64>,
+    /// How many notifications each phone has raised in its current burst.
+    pub notifier: Notifier,
+    /// The conversation open in the window while the window is in front:
+    /// its messages are read as they arrive.
+    viewing: Mutex<Option<String>>,
+    /// Why the saved global shortcut could not be registered at startup.
+    shortcut_error: Mutex<Option<String>>,
+    /// Since when Settings is recording a new shortcut: pressing the current
+    /// one then sends nothing.
+    shortcut_recording: Mutex<Option<Instant>>,
 }
+
+/// A recording Settings did not end (the page went away) stops counting after this.
+const SHORTCUT_RECORDING_MAX: Duration = Duration::from_secs(120);
 
 /// How many deleted message ids a new event stream starts with.
 const DELETED_REPLAYED: usize = 1000;
@@ -162,6 +176,7 @@ impl AppState {
         let pruned_before = p.config.pruned_before.min(now_ms());
         let cleared_through = p.config.cleared_through;
         let old_chat_dirs = p.db.attachment_roots().unwrap_or_default().iter().flat_map(|r| chat_dirs_of(Path::new(r))).collect();
+        let notifier = if p.bridge.quiet_updates() { Notifier::default() } else { Notifier::without_quiet_updates() };
         Arc::new(AppState {
             db: p.db,
             data_dir: p.data_dir,
@@ -192,6 +207,10 @@ impl AppState {
             recent_uploads: Mutex::new(HashMap::new()),
             awake: KeepAwake::default(),
             upload_reserve: p.upload_reserve,
+            notifier,
+            viewing: Mutex::new(None),
+            shortcut_error: Mutex::new(None),
+            shortcut_recording: Mutex::new(None),
         })
     }
 
@@ -415,6 +434,133 @@ impl AppState {
         }
     }
 
+    /// Saves a change to the settings, and keeps it only once it is saved.
+    fn change_config(&self, change: impl FnOnce(&mut Config)) -> std::io::Result<()> {
+        let mut cfg = self.config.lock().unwrap();
+        let mut next = cfg.clone();
+        change(&mut next);
+        next.save(&self.data_dir)?;
+        *cfg = next;
+        Ok(())
+    }
+
+    pub fn notify_hide_text(&self) -> bool {
+        self.config.lock().unwrap().notify_hide_text
+    }
+
+    pub fn set_notify_hide_text(&self, hide: bool) -> std::io::Result<()> {
+        self.change_config(|c| c.notify_hide_text = hide)
+    }
+
+    pub fn clipboard_shortcut(&self) -> Option<String> {
+        self.config.lock().unwrap().clipboard_shortcut.clone()
+    }
+
+    pub fn set_clipboard_shortcut(&self, shortcut: Option<String>) -> std::io::Result<()> {
+        self.change_config(|c| c.clipboard_shortcut = shortcut)?;
+        *self.shortcut_error.lock().unwrap() = None;
+        Ok(())
+    }
+
+    pub fn clipboard_target(&self) -> Option<String> {
+        self.config.lock().unwrap().clipboard_target.clone()
+    }
+
+    pub fn set_clipboard_target(&self, device_id: Option<String>) -> std::io::Result<()> {
+        self.change_config(|c| c.clipboard_target = device_id)
+    }
+
+    pub fn shortcut_error(&self) -> Option<String> {
+        self.shortcut_error.lock().unwrap().clone()
+    }
+
+    pub fn set_shortcut_error(&self, error: Option<String>) {
+        *self.shortcut_error.lock().unwrap() = error;
+    }
+
+    pub fn shortcut_recording(&self) -> bool {
+        self.shortcut_recording.lock().unwrap().is_some_and(|since| since.elapsed() < SHORTCUT_RECORDING_MAX)
+    }
+
+    pub fn set_shortcut_recording(&self, on: bool) {
+        *self.shortcut_recording.lock().unwrap() = on.then(Instant::now);
+    }
+
+    /// Records `stamp`, which every install of the app changes (Windows: the
+    /// time of its uninstaller); returns true when it differs from the last
+    /// start's: the first start after an install or upgrade.
+    pub fn note_install(&self, stamp: &str) -> bool {
+        if self.config.lock().unwrap().last_install.as_deref() == Some(stamp) {
+            return false;
+        }
+        if let Err(e) = self.change_config(|c| c.last_install = Some(stamp.to_string())) {
+            tracing::warn!("could not save the install time: {e}");
+        }
+        true
+    }
+
+    /// Launch at login as last set in Settings. Windows puts it back after an
+    /// upgrade: the old version's uninstaller removes it.
+    pub fn login_item_chosen(&self) -> bool {
+        self.config.lock().unwrap().login_item
+    }
+
+    pub fn set_login_item_chosen(&self, on: bool) {
+        if self.login_item_chosen() != on
+            && let Err(e) = self.change_config(|c| c.login_item = on)
+        {
+            tracing::warn!("could not save the launch-at-login choice: {e}");
+        }
+    }
+
+    pub fn is_viewing(&self, device_id: &str) -> bool {
+        self.viewing.lock().unwrap().as_deref() == Some(device_id)
+    }
+
+    /// The window shows `device_id`'s conversation in front (or nothing):
+    /// what it shows counts as read, and its notifications are taken back.
+    pub fn set_viewing(&self, device_id: Option<String>) {
+        // Published before marking read: a message arriving meanwhile is either
+        // covered by mark_read or finds its conversation in front (chat::after_insert).
+        *self.viewing.lock().unwrap() = device_id.clone();
+        if let Some(id) = &device_id {
+            if let Err(e) = self.db.mark_read(id) {
+                tracing::warn!("could not mark a conversation read: {e}");
+            }
+            self.notifier.forget(id);
+            self.bridge.withdraw_notifications(&Withdraw::Device(id.clone()));
+        }
+        self.unread_changed();
+    }
+
+    /// Unread messages per device.
+    pub fn unread_counts(&self) -> HashMap<String, u32> {
+        self.db.unread_counts().map(|v| v.into_iter().collect()).unwrap_or_else(|e| {
+            tracing::warn!("could not count unread messages: {e}");
+            HashMap::new()
+        })
+    }
+
+    /// Tells the window and the shell after anything that changes what is unread.
+    pub fn unread_changed(&self) {
+        let counts = self.unread_counts();
+        let total = counts.values().sum::<u32>();
+        self.emit(Audience::Host, "unread", &json!({ "counts": counts, "total": total }));
+        self.bridge.set_unread(total);
+    }
+
+    /// A device and its conversation are gone: its notifications go too.
+    pub fn device_removed(&self, device_id: &str) {
+        self.notifier.forget(device_id);
+        self.bridge.withdraw_notifications(&Withdraw::Device(device_id.to_string()));
+        let mut viewing = self.viewing.lock().unwrap();
+        if viewing.as_deref() == Some(device_id) {
+            *viewing = None;
+        }
+        drop(viewing);
+        self.unread_changed();
+    }
+
     pub fn chat_retention_days(&self) -> u32 {
         self.config.lock().unwrap().chat_retention_days
     }
@@ -422,12 +568,7 @@ impl AppState {
     /// Changes the setting only once it is saved, so Settings and the
     /// cleanup task never disagree.
     pub fn set_chat_retention_days(&self, days: u32) -> std::io::Result<()> {
-        let mut cfg = self.config.lock().unwrap();
-        let mut next = cfg.clone();
-        next.chat_retention_days = days;
-        next.save(&self.data_dir)?;
-        *cfg = next;
-        Ok(())
+        self.change_config(|c| c.chat_retention_days = days)
     }
 
     /// Deletes chat messages older than the retention setting and tells open
@@ -444,6 +585,7 @@ impl AppState {
         if n > 0 {
             self.emit(Audience::Everyone, "pruned", &json!({ "before": before }));
             self.emit(Audience::Host, "devices", &json!({}));
+            self.unread_changed();
         }
         Ok(n)
     }

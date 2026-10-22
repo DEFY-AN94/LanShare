@@ -44,6 +44,11 @@ fn env_in(dir: tempfile::TempDir) -> Env {
 
 /// `preferred_root`: the folder chosen in Settings, unavailable at startup.
 fn env_with(dir: tempfile::TempDir, preferred_root: Option<std::path::PathBuf>) -> Env {
+    env_bridged(dir, preferred_root, Arc::new(HeadlessBridge))
+}
+
+/// The same with the shell side played by `bridge`.
+fn env_bridged(dir: tempfile::TempDir, preferred_root: Option<std::path::PathBuf>, bridge: Arc<dyn super::bridge::HostBridge>) -> Env {
     let data_dir = dir.path().join("data");
     let sandbox = Sandbox::new(&dir.path().join("share")).unwrap();
     let tls = Tls::init(&dir.path().join("tls"), "test", None, &[]).unwrap();
@@ -62,7 +67,7 @@ fn env_with(dir: tempfile::TempDir, preferred_root: Option<std::path::PathBuf>) 
         local_port: LOCAL_PORT,
         lan_port: 53210,
         tls,
-        bridge: Arc::new(HeadlessBridge),
+        bridge,
         host_name: "test-host".into(),
         addresses: vec![Address { ip: "192.168.1.5".into(), iface: "en0".into() }],
         upload_reserve: None,
@@ -376,7 +381,7 @@ async fn earlier_chat_folders_stay_closed_after_a_folder_change() {
         db: Db::open_in_memory().unwrap(),
         data_dir: e.state.data_dir.clone(),
         home_dir: e.state.home_dir.clone(),
-        config: Config { shared_root: parent.clone(), port: 1, paused: false, chat_retention_days: 0, login_item_suggested: false, pruned_before: 0, cleared_through: 0 },
+        config: Config { port: 1, ..Config::with_root(parent.clone()) },
         sandbox: Sandbox::new(&parent).unwrap(),
         preferred_root: None,
         local_token: TOKEN.into(),
@@ -1040,21 +1045,21 @@ fn shared_folder_fallbacks() {
     // Missing folder whose parent exists: created in place.
     let wanted = home.join("Shares/LanShare");
     std::fs::create_dir_all(home.join("Shares")).unwrap();
-    let mut cfg = Config { shared_root: wanted.clone(), port: 1, paused: false, chat_retention_days: 0, login_item_suggested: false, pruned_before: 0, cleared_through: 0 };
+    let mut cfg = Config { port: 1, ..Config::with_root(wanted.clone()) };
     let (sb, preferred) = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
     assert_eq!(sb.root(), dunce::canonicalize(&wanted).unwrap());
     assert_eq!(preferred, None);
 
     // Unplugged drive (parent missing): fall back to ~/LanShare, keep the setting.
     let unplugged = dir.path().join("Volumes/T7/Media");
-    let mut cfg = Config { shared_root: unplugged.clone(), port: 1, paused: false, chat_retention_days: 0, login_item_suggested: false, pruned_before: 0, cleared_through: 0 };
+    let mut cfg = Config { port: 1, ..Config::with_root(unplugged.clone()) };
     let (sb, preferred) = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
     assert!(sb.root().ends_with("LanShare"));
     assert_eq!(cfg.shared_root, unplugged);
     assert_eq!(preferred, Some(unplugged), "used again once it is back");
 
     // Unsafe choice (home itself): fall back and overwrite the setting.
-    let mut cfg = Config { shared_root: home.clone(), port: 1, paused: false, chat_retention_days: 0, login_item_suggested: false, pruned_before: 0, cleared_through: 0 };
+    let mut cfg = Config { port: 1, ..Config::with_root(home.clone()) };
     let (sb, preferred) = super::open_shared_folder(&mut cfg, &home, &data).unwrap();
     assert_eq!(cfg.shared_root, sb.root());
     assert_eq!(preferred, None);
@@ -1197,3 +1202,5 @@ fn computer_name_matches_scutil() {
     assert_eq!(net::computer_name().as_deref(), Some(expected.as_str()));
     assert_eq!(super::host_name(), expected);
 }
+
+mod m8;

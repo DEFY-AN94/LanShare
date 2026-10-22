@@ -11,4 +11,7 @@
 
 !macro NSIS_HOOK_POSTUNINSTALL
   nsExec::Exec 'netsh advfirewall firewall delete rule name="LanShare"'
+  ; Launch at login: Tauri's uninstaller removes the Run value, also before
+  ; an upgrade, and the new version puts it back. Task Manager's record of it
+  ; (StartupApproved) stays, so turning it off there survives an upgrade.
 !macroend

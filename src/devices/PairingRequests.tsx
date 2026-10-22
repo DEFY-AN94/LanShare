@@ -10,9 +10,11 @@ import type { LoginItemInfo, PairRequest } from "../lib/types";
 async function suggestLoginItem(confirm: ReturnType<typeof useDialog>["confirm"]) {
   const info = await api.get<LoginItemInfo>("/api/host/login-item");
   if (!info.suggest) return;
+  // Only the computer's own window asks this: WebView2 on Windows, WKWebView on a Mac.
+  const windows = navigator.userAgent.includes("Windows");
   const yes = await confirm({
-    title: "登录 Mac 时自动启动 LanShare？",
-    message: "这样手机随时都能连上电脑。LanShare 会在菜单栏里运行，不打开窗口；以后可以在设置里更改。",
+    title: windows ? "登录 Windows 时自动启动 LanShare？" : "登录 Mac 时自动启动 LanShare？",
+    message: `这样手机随时都能连上电脑。LanShare 会在${windows ? "任务栏通知区域" : "菜单栏"}里运行，不打开窗口；以后可以在设置里更改。`,
     confirmText: "自动启动",
     cancelText: "暂不",
   });

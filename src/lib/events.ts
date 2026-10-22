@@ -6,7 +6,7 @@ export type ConnState = "connecting" | "open" | "offline" | "unauthorized" | "pa
 
 type Handler = (data: unknown) => void;
 
-const EVENT_NAMES = ["msg", "msg_deleted", "files", "devices", "pairing", "pairing_done", "revoked", "paused", "cleared", "pruned", "network", "shared_root", "resync", "ping"] as const;
+const EVENT_NAMES = ["msg", "msg_deleted", "files", "devices", "pairing", "pairing_done", "revoked", "paused", "cleared", "pruned", "network", "shared_root", "resync", "ping", "unread", "settings", "notice", "shortcut_pressed"] as const;
 
 /** iOS can leave a stream "connecting" for a minute (no Wi-Fi, cellular on). */
 const OPEN_TIMEOUT_MS = 6_000;

@@ -193,7 +193,7 @@ async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, declar
     require_visible_at(session, state, &dir)?;
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
     require_unreserved(session, &sandbox, &dir, &name)?;
-    let upload_id = super::messages::valid_client_id(q.upload_id.as_deref())?;
+    let upload_id = crate::core::chat::valid_client_id(q.upload_id.as_deref())?;
     let who = session.device_id().unwrap_or("host");
     // A retry whose first attempt already landed (only the response was lost).
     if let Some(id) = upload_id
