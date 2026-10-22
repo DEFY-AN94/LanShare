@@ -121,3 +121,7 @@ scripts/release_check.sh         checks a release tag against the code (docs/rel
 - Company, hotel and guest Wi-Fi networks often have "AP isolation" turned on, which stops devices from reaching each other.
 - If the computer's IP address changes, old Home Screen icons stop working. Scan the QR code again.
 - The app is not signed. On another Mac, allow the first launch in System Settings › Privacy & Security by clicking **Open Anyway**.
+
+## License
+
+LanShare is released under the [MIT License](LICENSE).
