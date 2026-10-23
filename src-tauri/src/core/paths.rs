@@ -14,6 +14,8 @@ pub enum PathError {
     NotFound,
     /// Resolves outside the shared folder (e.g. through a symlink).
     Outside,
+    /// 收件箱 / 已发送 is a link (or a junction), not a plain folder.
+    NotPlainFolder,
     Io(io::Error),
 }
 
@@ -23,6 +25,7 @@ impl std::fmt::Display for PathError {
             PathError::Invalid => write!(f, "路径无效"),
             PathError::NotFound => write!(f, "文件或文件夹不存在"),
             PathError::Outside => write!(f, "不允许访问共享文件夹以外的位置"),
+            PathError::NotPlainFolder => write!(f, "收件箱或已发送不是普通文件夹（可能是一个链接）：请在电脑上把它换回普通文件夹，然后再发送"),
             PathError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -178,6 +181,8 @@ impl Sandbox {
 
     /// Ensures `<root>/<name>` exists as a directory (used for 收件箱 / 已发送).
     /// Creates that one folder only, never the root above it (see `check_root`).
+    /// A link there is refused rather than followed: chat files would land in
+    /// whatever ordinary folder it points to, where phones can browse them.
     pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, PathError> {
         validate_segment(name)?;
         let p = self.root.join(name);
@@ -186,10 +191,17 @@ impl Sandbox {
         {
             return Err(e.into());
         }
+        // Windows junctions count as links here too.
+        if std::fs::symlink_metadata(&p)?.file_type().is_symlink() {
+            return Err(PathError::NotPlainFolder);
+        }
         let canon = std::fs::canonicalize(&p)?;
         self.check(&canon)?;
         if !canon.is_dir() {
             return Err(PathError::Invalid);
+        }
+        if canon != self.root_canon.join(name) {
+            return Err(PathError::NotPlainFolder);
         }
         Ok(friendly(&canon))
     }

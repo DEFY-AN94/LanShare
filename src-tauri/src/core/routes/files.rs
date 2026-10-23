@@ -43,6 +43,16 @@ fn require_visible_at(session: &Session, state: &AppState, resolved: &FsPath) ->
     Ok(())
 }
 
+/// Moving or deleting a folder that holds a chat folder (one of an earlier
+/// shared folder, now inside this one) would carry chat files out of their
+/// protection: only the computer may.
+fn require_no_chat_folder_inside(session: &Session, state: &AppState, entry: &FsPath) -> ApiResult<()> {
+    if !session.is_host() && state.holds_chat_folder(entry) {
+        return Err(ApiError::forbidden("这个文件夹里有聊天收发的文件，只能在电脑上移动或删除"));
+    }
+    Ok(())
+}
+
 /// Phones may not create items named like the chat folders at the top level.
 fn require_unreserved(session: &Session, sandbox: &Sandbox, dir: &FsPath, name: &str) -> ApiResult<()> {
     if !session.is_host() && dir == sandbox.root() && matches!(name, INBOX_DIR | SENT_DIR) {
@@ -278,6 +288,7 @@ pub async fn rename(State(state): State<Shared>, Extension(session): Extension<S
     // The item itself too: a phone may not rename a chat folder away.
     require_visible_at(&session, &state, &src)?;
     require_visible_at(&session, &state, &parent)?;
+    require_no_chat_folder_inside(&session, &state, &src)?;
     let name = sanitize_filename(&b.name).ok_or_else(|| ApiError::bad_request("名称无效"))?;
     require_unreserved(&session, &sandbox, &parent, &name)?;
     let dst = parent.join(&name);
@@ -364,6 +375,7 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
     if let Some(parent) = target.parent() {
         require_visible_at(&session, &state, parent)?;
     }
+    require_no_chat_folder_inside(&session, &state, &target)?;
     let parent_rel = target.parent().and_then(|p| sandbox.relative(p)).unwrap_or_default();
     trash(target).await?;
     state.emit_files_changed(&parent_rel);

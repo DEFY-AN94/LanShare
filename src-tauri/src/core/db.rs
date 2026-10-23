@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS deleted_ids (
   device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   deleted_at INTEGER NOT NULL
 );
+-- Shared folders that chat files were saved in. Their 收件箱 and 已发送 stay
+-- the computer's alone for good, also after the messages are deleted and
+-- another folder is shared (see AppState::is_chat_location).
+CREATE TABLE IF NOT EXISTS chat_roots (
+  root TEXT PRIMARY KEY,
+  added_at INTEGER NOT NULL
+);
 "#;
 
 #[derive(Clone, Debug)]
@@ -149,6 +156,7 @@ impl Db {
         // secure_delete overwrites deleted rows with zeros, so cleared chats
         // cannot be read back out of the database file.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
+        let had_chat_roots: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_roots'", [], |r| r.get(0))?;
         conn.execute_batch(SCHEMA)?;
         // Databases created before attachments remembered their root and their file.
         for (column, kind) in [("file_root", "TEXT"), ("file_created", "INTEGER")] {
@@ -163,6 +171,13 @@ impl Db {
             conn.execute_batch(
                 "ALTER TABLE devices ADD COLUMN read_through INTEGER NOT NULL DEFAULT 0;
                  UPDATE devices SET read_through = (SELECT COALESCE(MAX(id), 0) FROM messages);",
+            )?;
+        }
+        if had_chat_roots == 0 {
+            // Upgrades: the folders that attachments still remember held chat files.
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_roots (root, added_at) SELECT DISTINCT file_root, ?1 FROM messages WHERE file_root IS NOT NULL",
+                params![now_ms()],
             )?;
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -466,10 +481,16 @@ impl Db {
         Ok(n + conn.execute("DELETE FROM deleted_ids WHERE deleted_at < ?1", params![before])?)
     }
 
-    /// Shared-folder roots that chat attachments were saved under.
-    pub fn attachment_roots(&self) -> Result<Vec<String>> {
+    /// Records that chat files are saved under `root`; true the first time.
+    pub fn remember_chat_root(&self, root: &str) -> Result<bool> {
+        Ok(self.conn().execute("INSERT OR IGNORE INTO chat_roots (root, added_at) VALUES (?1, ?2)", params![root, now_ms()])? > 0)
+    }
+
+    /// Shared folders chat files were ever saved under, and those the
+    /// remaining attachments name.
+    pub fn chat_roots(&self) -> Result<Vec<String>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT DISTINCT file_root FROM messages WHERE file_root IS NOT NULL")?;
+        let mut stmt = conn.prepare("SELECT root FROM chat_roots UNION SELECT file_root FROM messages WHERE file_root IS NOT NULL")?;
         let rows = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(rows)
     }
@@ -663,6 +684,27 @@ mod tests {
         db.mark_read("d0").unwrap();
         assert!(db.unread_counts().unwrap().contains(&("d0".to_string(), 0)));
         assert_eq!(db.devices_by_recent().unwrap().iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["d1", "d0"]);
+    }
+
+    #[test]
+    fn chat_roots_outlive_their_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lanshare.db");
+        {
+            // A database from before chat roots were recorded: only attachments remember theirs.
+            let db = Db::open(&path).unwrap();
+            device(&db, "d1");
+            let mut m = text("d1", None, "x");
+            m.file_root = Some("/old/share");
+            db.insert_message(&m).unwrap();
+            db.conn().execute_batch("DROP TABLE chat_roots;").unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        db.clear_messages().unwrap();
+        assert_eq!(db.chat_roots().unwrap(), ["/old/share"], "seeded once on upgrade, kept after the messages go");
+        assert!(db.remember_chat_root("/new/share").unwrap());
+        assert!(!db.remember_chat_root("/new/share").unwrap(), "remembered once");
+        assert_eq!(db.chat_roots().unwrap().len(), 2);
     }
 
     #[test]

@@ -78,6 +78,8 @@ impl From<PathError> for ApiError {
             PathError::Invalid => ApiError::bad_request(e.to_string()),
             PathError::NotFound => ApiError::not_found(e.to_string()),
             PathError::Outside => ApiError::forbidden(e.to_string()),
+            // The computer can fix it, and the phone send again.
+            PathError::NotPlainFolder => ApiError::conflict(e.to_string()),
             PathError::Io(io) => io.into(),
         }
     }

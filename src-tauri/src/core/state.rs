@@ -103,8 +103,9 @@ pub struct AppState {
     revoked: Mutex<HashSet<String>>,
     /// Watches the shared folder so changes made in Finder reach the clients.
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
-    /// Chat folders of shared folders used before (attachments remember
-    /// their root): they stay host-only even inside a new shared folder.
+    /// Chat folders of every shared folder chat files were saved in
+    /// (`Db::chat_roots`), as recorded and as the disk resolves them: they
+    /// stay host-only for good, also inside another shared folder.
     old_chat_dirs: RwLock<Vec<PathBuf>>,
     /// Cutoff (ms) of the last automatic cleanup and the highest id the last
     /// clear removed (both kept in the config). Each new event stream starts
@@ -149,6 +150,23 @@ fn chat_dirs_of(root: &Path) -> [PathBuf; 2] {
     [root.join(INBOX_DIR), root.join(SENT_DIR)]
 }
 
+/// A root's chat folders as recorded and, when they differ (a symlinked
+/// path, a Windows short name), as the disk resolves them.
+fn protected_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs = chat_dirs_of(root).to_vec();
+    if let Ok(canon) = dunce::canonicalize(root)
+        && canon != root
+    {
+        dirs.extend(chat_dirs_of(&canon));
+    }
+    dirs
+}
+
+/// Whether a root has a chat folder on disk.
+fn has_chat_dirs(root: &Path) -> bool {
+    chat_dirs_of(root).iter().any(|d| d.is_dir())
+}
+
 pub type Shared = Arc<AppState>;
 
 pub struct StateParts {
@@ -175,7 +193,13 @@ impl AppState {
         // A cutoff from a clock that ran ahead must not hide newer messages.
         let pruned_before = p.config.pruned_before.min(now_ms());
         let cleared_through = p.config.cleared_through;
-        let old_chat_dirs = p.db.attachment_roots().unwrap_or_default().iter().flat_map(|r| chat_dirs_of(Path::new(r))).collect();
+        // Chat files saved before chat roots were recorded, and deleted since, leave only their folders.
+        if has_chat_dirs(p.sandbox.root())
+            && let Err(e) = p.db.remember_chat_root(&p.sandbox.root().to_string_lossy())
+        {
+            tracing::warn!("could not record the shared folder's chat folders: {e}");
+        }
+        let old_chat_dirs = p.db.chat_roots().unwrap_or_default().iter().flat_map(|r| protected_dirs(Path::new(r))).collect();
         let notifier = if p.bridge.quiet_updates() { Notifier::default() } else { Notifier::without_quiet_updates() };
         Arc::new(AppState {
             db: p.db,
@@ -259,6 +283,23 @@ impl AppState {
     /// shared folder or of one used before.
     pub fn is_chat_location(&self, abs: &Path) -> bool {
         self.sandbox().relative(abs).is_some_and(|rel| is_chat_path(&rel)) || self.old_chat_dirs.read().unwrap().iter().any(|d| abs.starts_with(d))
+    }
+
+    /// Whether `entry` (as `Sandbox::resolve_entry` gives it) is, or holds, a
+    /// chat folder of the current shared folder or of one used before:
+    /// moving or deleting it would carry chat files out of their protection.
+    pub fn holds_chat_folder(&self, entry: &Path) -> bool {
+        let current = chat_dirs_of(self.sandbox().root());
+        current.iter().chain(self.old_chat_dirs.read().unwrap().iter()).any(|d| d.starts_with(entry))
+    }
+
+    /// Records, before a chat file is saved under `root`, that its chat
+    /// folders stay host-only for good (`Db::chat_roots`).
+    pub fn remember_chat_root(&self, root: &Path) -> anyhow::Result<()> {
+        if self.db.remember_chat_root(&root.to_string_lossy())? {
+            self.old_chat_dirs.write().unwrap().extend(protected_dirs(root));
+        }
+        Ok(())
     }
 
     /// Marks a removed device so transfers it already started are cut off.
@@ -351,7 +392,13 @@ impl AppState {
 
     fn replace_sandbox(&self, sb: Sandbox) {
         let previous = std::mem::replace(&mut *self.sandbox.write().unwrap(), sb);
-        self.old_chat_dirs.write().unwrap().extend(chat_dirs_of(previous.root()));
+        // Recorded with its first chat file already, unless an older version saved them.
+        if has_chat_dirs(previous.root())
+            && let Err(e) = self.remember_chat_root(previous.root())
+        {
+            tracing::warn!("could not record the previous shared folder's chat folders: {e}");
+            self.old_chat_dirs.write().unwrap().extend(protected_dirs(previous.root()));
+        }
     }
 
     pub fn emit(&self, audience: Audience, name: &'static str, data: &impl serde::Serialize) {

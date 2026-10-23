@@ -1227,4 +1227,5 @@ fn computer_name_matches_scutil() {
     assert_eq!(super::host_name(), expected);
 }
 
+mod chat_folders;
 mod m8;
