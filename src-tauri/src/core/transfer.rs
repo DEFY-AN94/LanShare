@@ -132,7 +132,8 @@ pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_nam
         h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
     }
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
+    // No copy stays in a browser cache after unpairing or clearing the chat.
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
 }
 

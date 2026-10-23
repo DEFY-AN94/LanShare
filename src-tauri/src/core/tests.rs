@@ -226,6 +226,9 @@ async fn files_and_sandbox() {
     let r = send(&e.lan, range).await;
     assert_eq!(r.status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(&r.body[..], b"world");
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store", "no copy stays in the phone's browser cache");
+    let r = send(&e.lan, dev_req(Method::HEAD, "/api/files/download?path=a.txt", Some(&cookie), Body::empty(), false)).await;
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
 
     for bad in ["..%2Fx", "%2E%2E", ".hidden", "a%5Cb", "C:%2Fx"] {
         let r = send(&e.lan, dev_req(Method::GET, &format!("/api/files/download?path={bad}"), Some(&cookie), Body::empty(), false)).await;
@@ -237,11 +240,32 @@ async fn files_and_sandbox() {
     let r = send(&e.lan, dev_req(Method::GET, "/api/files/download?path=x.html&inline=1", Some(&cookie), Body::empty(), false)).await;
     assert_eq!(r.headers[header::CONTENT_TYPE], "text/plain; charset=utf-8");
     assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
 
     // Read-only devices cannot write.
     let device = send(&e.local, host_req(Method::GET, "/api/host/devices", None)).await.json()[0]["id"].as_str().unwrap().to_string();
     send(&e.local, host_req(Method::PATCH, &format!("/api/host/devices/{device}"), Some(json!({"can_write": false})))).await;
     assert_eq!(send(&e.lan, up("", "b.txt", b"x")).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn attachments_never_stay_in_a_browser_cache() {
+    let e = env();
+    let cookie = pair(&e).await;
+    let file = send(&e.lan, dev_req(Method::POST, "/api/messages/upload?name=a.jpg", Some(&cookie), Body::from(&b"jpeg"[..]), false)).await.json();
+    let id = file["id"].as_i64().unwrap();
+    for uri in [format!("/api/messages/{id}/file"), format!("/api/messages/{id}/file?inline=1")] {
+        let r = send(&e.lan, dev_req(Method::GET, &uri, Some(&cookie), Body::empty(), false)).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.headers[header::CACHE_CONTROL], "no-store", "phone {uri}");
+        // The desktop window's web view keeps a disk cache too.
+        let r = send(&e.local, host_req(Method::GET, &uri, None)).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.headers[header::CACHE_CONTROL], "no-store", "host {uri}");
+    }
+    let r = send(&e.lan, dev_req(Method::GET, "/api/files/download?path=missing.txt", Some(&cookie), Body::empty(), false)).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
 }
 
 #[tokio::test]
