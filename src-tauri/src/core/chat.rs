@@ -128,6 +128,8 @@ pub async fn store_upload(state: &Shared, session: &Session, q: &UploadRequest, 
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.ensure_subdir(if session.is_host() { SENT_DIR } else { INBOX_DIR })?;
     let mut reservation = preflight(state, &dir, length)?;
+    // Before the first byte lands: these chat folders stay host-only for good.
+    state.remember_chat_root(sandbox.root()).map_err(ApiError::internal)?;
     let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
     let (path, size) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut()).await?;
     let created = std::fs::metadata(&path).ok().as_ref().and_then(created_ms);

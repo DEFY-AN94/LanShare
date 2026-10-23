@@ -14,6 +14,8 @@ pub enum PathError {
     NotFound,
     /// Resolves outside the shared folder (e.g. through a symlink).
     Outside,
+    /// 收件箱 / 已发送 is a link (or a junction), not a plain folder.
+    NotPlainFolder,
     Io(io::Error),
 }
 
@@ -23,6 +25,7 @@ impl std::fmt::Display for PathError {
             PathError::Invalid => write!(f, "路径无效"),
             PathError::NotFound => write!(f, "文件或文件夹不存在"),
             PathError::Outside => write!(f, "不允许访问共享文件夹以外的位置"),
+            PathError::NotPlainFolder => write!(f, "收件箱或已发送不是普通文件夹（可能是一个链接）：请在电脑上把它换回普通文件夹，然后再发送"),
             PathError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -176,21 +179,38 @@ impl Sandbox {
         if p.is_file() { Ok(p) } else { Err(PathError::Invalid) }
     }
 
-    /// Ensures `<root>/<name>` exists as a directory (used for 收件箱 / 已发送).
-    /// Creates that one folder only, never the root above it (see `check_root`).
-    pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, PathError> {
+    /// Whether `<root>/<name>` (收件箱 / 已发送) can take chat files: missing
+    /// (it will be created) or a plain folder. A link there, or anything else,
+    /// is refused rather than followed: chat files would land in whatever
+    /// folder it points to, where phones can browse them.
+    pub fn check_subdir(&self, name: &str) -> Result<(), PathError> {
         validate_segment(name)?;
         let p = self.root.join(name);
+        match std::fs::symlink_metadata(&p) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+            // Windows junctions count as links here too.
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => Err(PathError::NotPlainFolder),
+            Ok(_) if std::fs::canonicalize(&p)? != self.root_canon.join(name) => Err(PathError::NotPlainFolder),
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// Ensures `<root>/<name>` exists as a plain directory (used for 收件箱 /
+    /// 已发送; see `check_subdir`). Creates that one folder only, never the
+    /// root above it (see `check_root`).
+    pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, PathError> {
+        self.check_subdir(name)?;
+        let p = self.root.join(name);
         if let Err(e) = std::fs::create_dir(&p)
-            && !(e.kind() == io::ErrorKind::AlreadyExists && p.is_dir())
+            && e.kind() != io::ErrorKind::AlreadyExists
         {
             return Err(e.into());
         }
+        // Again: something else may have been put there meanwhile.
+        self.check_subdir(name)?;
         let canon = std::fs::canonicalize(&p)?;
         self.check(&canon)?;
-        if !canon.is_dir() {
-            return Err(PathError::Invalid);
-        }
         Ok(friendly(&canon))
     }
 
