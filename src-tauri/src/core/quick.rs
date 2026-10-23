@@ -33,11 +33,14 @@ pub(crate) fn is_launchable(path: &Path) -> bool {
         // More Windows types that run, install or reach out when opened.
         "pyw", "pyz", "pyzw", "msu", "ppkg", "searchconnector-ms", "search-ms", "website", "scf", "theme", "themepack", "deskthemepack",
         "diagcab",
-        // macOS disk images mount; profiles, certificates, screen savers and shortcuts install; Java Web Start runs.
-        "dmg", "sparseimage", "sparsebundle", "cdr", "smi", "mobileconfig", "provisionprofile", "cer", "crt", "p12", "pfx", "saver",
-        "shortcut", "jnlp",
-        // Windows remote desktop files connect out; the rest run or install.
-        "rdp", "xll", "wsc", "sct", "shb", "shs", "psc1", "msh", "mst", "xbap",
+        // macOS disk images mount; profiles, apps, screen savers and shortcuts install; Java Web Start runs.
+        "dmg", "udif", "dmgpart", "asif", "toast", "dvdr", "cdr", "sparseimage", "sparsebundle", "backupbundle", "mobileconfig",
+        "configprofile", "provisionprofile", "ipa", "saver", "shortcut", "jnlp",
+        // Certificates and keychains import on both systems; server locations connect out.
+        "cer", "crt", "cert", "der", "pem", "p7b", "p7c", "p12", "pkcs12", "pfx", "keychain", "keychain-db", "vncloc", "afploc",
+        "ftploc", "atloc",
+        // Windows remote desktop files connect out; sandbox files run a command; the rest run or install.
+        "rdp", "wsb", "xll", "wsc", "sct", "shb", "shs", "psc1", "msh", "mst", "xbap",
     ];
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if RISKY.contains(&ext.as_str()) {
@@ -359,11 +362,13 @@ mod tests {
         for name in [
             "setup.exe", "run.ps1", "link.lnk", "help.chm", "HELP.CHM", "app.msix", "pkg.appx", "x.appinstaller", "disk.iso", "disk.img",
             "disk.vhd", "disk.vhdx", "Tool.app", "x.sh", "x.pyw", "fix.diagcab", "update.msu", "x.scf", "dark.theme", "disk.dmg",
-            "DISK.DMG", "wifi.mobileconfig", "x.sparseimage", "ca.crt", "id.p12", "x.saver", "x.jnlp", "x.rdp",
+            "DISK.DMG", "wifi.mobileconfig", "x.sparseimage", "ca.crt", "id.p12", "x.saver", "x.jnlp", "x.rdp", "x.configprofile",
+            "x.udif", "x.asif", "ca.pem", "ca.der", "x.p7b", "login.keychain-db", "x.vncloc", "x.wsb",
         ] {
             assert!(is_launchable(Path::new(name)), "{name}");
         }
-        for name in ["photo.jpg", "doc.pdf", "notes.txt", "movie.mov", "archive.zip"] {
+        // .smi is a subtitle file today; no supported macOS mounts it.
+        for name in ["photo.jpg", "doc.pdf", "notes.txt", "movie.mov", "archive.zip", "subs.smi"] {
             assert!(!is_launchable(Path::new(name)), "{name}");
         }
     }

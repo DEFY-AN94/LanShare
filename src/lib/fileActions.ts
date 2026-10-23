@@ -3,7 +3,7 @@
 
 import { api } from "./api";
 
-const REVEALED = "为了安全，程序、安装包、磁盘映像和描述文件不会直接打开，已在文件夹中显示";
+const REVEALED = "为了安全，程序、脚本、安装包、磁盘映像、描述文件和证书不会直接打开，已在文件夹中显示";
 
 /** Opens with the default app. Anything that would run, mount or install is only revealed in the folder. */
 export async function hostOpen(path: string, notify?: (msg: string) => void) {

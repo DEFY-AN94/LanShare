@@ -1,4 +1,5 @@
 // Which parts of a chat message become links.
+
 import { expect, it } from "vitest";
 import { splitLinks } from "./format";
 

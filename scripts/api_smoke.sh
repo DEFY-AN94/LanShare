@@ -29,11 +29,12 @@ PHONE=${PHONE_OVERRIDE:-$PHONE_FROM_LOG}
 LOCAL=$(echo "$HOSTURL" | sed 's#/__local_login.*##')
 echo "host: $LOCAL  phone: $PHONE"
 H=(-s -c "$T/host.jar" -b "$T/host.jar")
-TLS=(-s --cacert "$T/ca.pem")
+TLS=(-sS --cacert "$T/ca.pem")
 D=("${TLS[@]}" -c "$T/dev.jar" -b "$T/dev.jar")
 X=(-H "X-LanShare: 1")
 curl "${H[@]}" -o "$T/ca.pem" "$LOCAL/api/ca.crt"
-grep -q 'BEGIN CERTIFICATE' "$T/ca.pem" || { echo "no CA from $LOCAL (is the server in the log still running?)" >&2; exit 1; }
+grep -q 'BEGIN CERTIFICATE' "$T/ca.pem" || { echo "no CA from $LOCAL (is the server in the log still running?)" >&2; rm -rf "$T"; exit 1; }
+curl "${TLS[@]}" -o /dev/null "$PHONE/api/ca" || { echo "TLS to $PHONE does not verify against the CA from $LOCAL" >&2; rm -rf "$T"; exit 1; }
 
 echo "== host login"
 check "local login redirects" "$(curl "${H[@]}" -o /dev/null -w '%{http_code}' "$HOSTURL")" 303
@@ -82,8 +83,13 @@ contains "device sends a file" "$FM" '"path":"收件箱/IMG_0001.jpg"'
 FID=$(echo "$FM" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 curl "${H[@]}" -o "$T/back.jpg" "$LOCAL/api/messages/$FID/file"
 cmp -s "$T/pic.jpg" "$T/back.jpg" && ok "host downloads identical file" || bad "host downloads identical file"
-contains "phone keeps no cached copy of an attachment" "$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/messages/$FID/file")" 'cache-control: no-store'
-contains "host keeps no cached copy of an attachment" "$(curl "${H[@]}" -D - -o /dev/null "$LOCAL/api/messages/$FID/file")" 'cache-control: no-store'
+# Errors carry no-store too, so check that each answer really is the file.
+PH=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/messages/$FID/file")
+contains "phone downloads its own attachment" "$PH" 'content-disposition: attachment'
+contains "phone keeps no cached copy of an attachment" "$PH" 'cache-control: no-store'
+HH=$(curl "${H[@]}" -D - -o /dev/null "$LOCAL/api/messages/$FID/file")
+contains "host attachment answer is the file" "$HH" 'content-disposition: attachment'
+contains "host keeps no cached copy of an attachment" "$HH" 'cache-control: no-store'
 FM2=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/pic.jpg" "$PHONE/api/messages/upload?client_id=f-1&name=IMG_0001.jpg")
 check "file upload retry is idempotent" "$(echo "$FM2" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$FID"
 # Server data is only ever passed to Python as data, never spliced into its code.
@@ -94,7 +100,7 @@ check "deleted message is gone" "$(curl "${D[@]}" "$PHONE/api/messages?limit=50"
 check "a late retry of the deleted message is refused" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"client_id":"del-1","text":"delete me"}' "$PHONE/api/messages")" 410
 
 echo "== SSE"
-( curl "${D[@]}" -N --max-time 3 "$PHONE/api/events" > "$T/sse.txt" ) &
+( curl "${D[@]}" -N --max-time 3 "$PHONE/api/events" > "$T/sse.txt" 2>/dev/null ) &
 sleep 1
 curl "${H[@]}" "${X[@]}" -o /dev/null -H 'Content-Type: application/json' -d "{\"device\":\"$DEV\",\"text\":\"live\"}" "$LOCAL/api/messages"
 wait
