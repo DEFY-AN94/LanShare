@@ -20,8 +20,8 @@ pub const ACTION_OPEN: &str = "open";
 pub const ACTION_SHOW: &str = "show";
 pub const ACTION_DISMISS: &str = "dismiss";
 
-/// Things the OS would *run* rather than show (apps, scripts, installers,
-/// shortcuts). Files from other devices of this kind are only revealed.
+/// Things the OS would *run*, mount or install rather than show (apps, scripts,
+/// installers, disk images, profiles, shortcuts). These are only revealed.
 pub(crate) fn is_launchable(path: &Path) -> bool {
     const RISKY: &[&str] = &[
         "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "fish", "pkg", "mpkg", "jar", "py", "rb", "pl", "php", "scpt",
@@ -33,6 +33,11 @@ pub(crate) fn is_launchable(path: &Path) -> bool {
         // More Windows types that run, install or reach out when opened.
         "pyw", "pyz", "pyzw", "msu", "ppkg", "searchconnector-ms", "search-ms", "website", "scf", "theme", "themepack", "deskthemepack",
         "diagcab",
+        // macOS disk images mount; profiles, certificates, screen savers and shortcuts install; Java Web Start runs.
+        "dmg", "sparseimage", "sparsebundle", "cdr", "smi", "mobileconfig", "provisionprofile", "cer", "crt", "p12", "pfx", "saver",
+        "shortcut", "jnlp",
+        // Windows remote desktop files connect out; the rest run or install.
+        "rdp", "xll", "wsc", "sct", "shb", "shs", "psc1", "msh", "mst", "xbap",
     ];
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if RISKY.contains(&ext.as_str()) {
@@ -353,12 +358,22 @@ mod tests {
     fn files_that_run_or_mount_are_only_revealed() {
         for name in [
             "setup.exe", "run.ps1", "link.lnk", "help.chm", "HELP.CHM", "app.msix", "pkg.appx", "x.appinstaller", "disk.iso", "disk.img",
-            "disk.vhd", "disk.vhdx", "Tool.app", "x.sh", "x.pyw", "fix.diagcab", "update.msu", "x.scf", "dark.theme",
+            "disk.vhd", "disk.vhdx", "Tool.app", "x.sh", "x.pyw", "fix.diagcab", "update.msu", "x.scf", "dark.theme", "disk.dmg",
+            "DISK.DMG", "wifi.mobileconfig", "x.sparseimage", "ca.crt", "id.p12", "x.saver", "x.jnlp", "x.rdp",
         ] {
             assert!(is_launchable(Path::new(name)), "{name}");
         }
         for name in ["photo.jpg", "doc.pdf", "notes.txt", "movie.mov", "archive.zip"] {
             assert!(!is_launchable(Path::new(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn a_disk_image_folder_is_only_revealed() {
+        // A phone can build one with mkdir and uploads; `open` would mount it.
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("Disk.sparsebundle");
+        std::fs::create_dir(&bundle).unwrap();
+        assert!(is_launchable(&bundle));
     }
 }
