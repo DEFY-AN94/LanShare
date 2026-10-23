@@ -10,7 +10,7 @@ Send messages and files between an iPhone and a computer over your local network
 - **Messages**: an iMessage-style chat with a quick copy button next to every text message. Photos and files can be sent straight from the chat.
 - **Files**: the iPhone browses a shared folder on the computer (`~/LanShare` by default) and can upload, download, preview, rename and delete (deleted files go to the Trash or Recycle Bin).
 - **No iPhone app to install**: scan a QR code to open LanShare in Safari, and add it to the Home Screen if you like.
-- **Secure**: all network traffic is HTTPS; every pairing must be approved on the computer; only connections from the local network are accepted; phones can only reach the shared folder.
+- **Secure**: all network traffic is HTTPS; every pairing must be approved on the computer; only private-network addresses are accepted (on Windows, the installer's firewall rule further limits this to the local subnet); phones can only reach the shared folder.
 
 Status: the Mac version is done. The Windows version is built, tested and packaged by GitHub Actions (milestone M6 in PLAN.md).
 
