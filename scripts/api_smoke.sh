@@ -29,7 +29,8 @@ PHONE=${PHONE_OVERRIDE:-$PHONE_FROM_LOG}
 LOCAL=$(echo "$HOSTURL" | sed 's#/__local_login.*##')
 echo "host: $LOCAL  phone: $PHONE"
 H=(-s -c "$T/host.jar" -b "$T/host.jar")
-TLS=(-sS --cacert "$T/ca.pem")
+# Schannel (curl on Windows runners) also wants revocation data, which a local CA never has.
+TLS=(-sS --ssl-revoke-best-effort --cacert "$T/ca.pem")
 D=("${TLS[@]}" -c "$T/dev.jar" -b "$T/dev.jar")
 X=(-H "X-LanShare: 1")
 curl "${H[@]}" -o "$T/ca.pem" "$LOCAL/api/ca.crt"
