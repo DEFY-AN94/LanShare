@@ -566,6 +566,7 @@ Windows features are still built, and CI builds and tests every change on Window
 
 Each milestone adds here what the Simulator cannot show. Record the results in section 4.1, in the same format as the 4.1.3 table:
 
+- From security PR 1 (files and attachments sent with `no-store`): a video plays and seeks, and an `.m4a` plays instead of downloading (the server labels it `audio/m4a`). The iOS 27.0 Simulator's Safari never starts LanShare video, with or without this change. On the Mac app, a notification's **打开** (Open) on a received `.mobileconfig` or `.dmg` only shows it in Finder
 - From M8: text sent from the Mac's clipboard arrives in the phone's chat, and a screenshot arrives as a PNG that opens and saves to Photos
 - From M9: pairing through the `.local` QR code with no warning when the CA is trusted; after the Mac's IP changes, the Home Screen icon reconnects with its chat history; the Shortcut in the share sheet sends a Safari URL, two photos and a PDF from Files, over `.local` and over the IP
 
