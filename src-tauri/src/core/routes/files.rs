@@ -242,7 +242,12 @@ pub async fn upload_check(State(state): State<Shared>, Extension(session): Exten
             require_visible_at(&session, &state, &dir)?;
             dir
         }
-        None => sandbox.root().to_path_buf(),
+        // A chat attachment: a chat folder that is not a plain folder is
+        // refused here too, so the phone hears why before sending anything.
+        None => {
+            sandbox.check_subdir(if session.is_host() { SENT_DIR } else { INBOX_DIR })?;
+            sandbox.root().to_path_buf()
+        }
     };
     check_fits(&state, &dir, q.size)?;
     Ok(axum::http::StatusCode::NO_CONTENT)

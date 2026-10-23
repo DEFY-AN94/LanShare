@@ -20,7 +20,7 @@ use super::events::{Audience, ServerEvent};
 use super::model::{Address, FileRef, MessageOut};
 use super::notices::Notifier;
 use super::pairing::Pairing;
-use super::paths::{Sandbox, Unavailable, unsafe_root_reason};
+use super::paths::{Sandbox, Unavailable, shell_path, unsafe_root_reason};
 use super::tls::Tls;
 use super::util::now_ms;
 
@@ -104,8 +104,8 @@ pub struct AppState {
     /// Watches the shared folder so changes made in Finder reach the clients.
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Chat folders of every shared folder chat files were saved in
-    /// (`Db::chat_roots`), as recorded and as the disk resolves them: they
-    /// stay host-only for good, also inside another shared folder.
+    /// (`Db::chat_roots`, recorded as `Sandbox::root` gives them): they stay
+    /// host-only for good, also inside another shared folder.
     old_chat_dirs: RwLock<Vec<PathBuf>>,
     /// Cutoff (ms) of the last automatic cleanup and the highest id the last
     /// clear removed (both kept in the config). Each new event stream starts
@@ -150,18 +150,6 @@ fn chat_dirs_of(root: &Path) -> [PathBuf; 2] {
     [root.join(INBOX_DIR), root.join(SENT_DIR)]
 }
 
-/// A root's chat folders as recorded and, when they differ (a symlinked
-/// path, a Windows short name), as the disk resolves them.
-fn protected_dirs(root: &Path) -> Vec<PathBuf> {
-    let mut dirs = chat_dirs_of(root).to_vec();
-    if let Ok(canon) = dunce::canonicalize(root)
-        && canon != root
-    {
-        dirs.extend(chat_dirs_of(&canon));
-    }
-    dirs
-}
-
 /// Whether a root has a chat folder on disk.
 fn has_chat_dirs(root: &Path) -> bool {
     chat_dirs_of(root).iter().any(|d| d.is_dir())
@@ -199,7 +187,12 @@ impl AppState {
         {
             tracing::warn!("could not record the shared folder's chat folders: {e}");
         }
-        let old_chat_dirs = p.db.chat_roots().unwrap_or_default().iter().flat_map(|r| protected_dirs(Path::new(r))).collect();
+        // Paths only: an earlier shared folder may be on a disk or share that is gone.
+        let mut old_chat_dirs: Vec<PathBuf> = p.db.chat_roots().unwrap_or_default().iter().flat_map(|r| chat_dirs_of(Path::new(r))).collect();
+        // Earlier versions saved attachments through a chat folder that was a
+        // link, into the folder it pointed to: that folder is a chat folder too.
+        let linked = p.db.attachments_outside(&[INBOX_DIR, SENT_DIR]).unwrap_or_default();
+        old_chat_dirs.extend(linked.into_iter().filter_map(|(root, path)| Some(Path::new(&root).join(path.rsplit_once('/')?.0))));
         let notifier = if p.bridge.quiet_updates() { Notifier::default() } else { Notifier::without_quiet_updates() };
         Arc::new(AppState {
             db: p.db,
@@ -282,22 +275,25 @@ impl AppState {
     /// Whether `abs` (a resolved path) is in a chat folder of the current
     /// shared folder or of one used before.
     pub fn is_chat_location(&self, abs: &Path) -> bool {
-        self.sandbox().relative(abs).is_some_and(|rel| is_chat_path(&rel)) || self.old_chat_dirs.read().unwrap().iter().any(|d| abs.starts_with(d))
+        // Long Windows paths come verbatim (\\?\C:\...), recorded ones do not.
+        let plain = shell_path(abs);
+        self.sandbox().relative(abs).is_some_and(|rel| is_chat_path(&rel)) || self.old_chat_dirs.read().unwrap().iter().any(|d| plain.starts_with(shell_path(d)))
     }
 
     /// Whether `entry` (as `Sandbox::resolve_entry` gives it) is, or holds, a
     /// chat folder of the current shared folder or of one used before:
     /// moving or deleting it would carry chat files out of their protection.
     pub fn holds_chat_folder(&self, entry: &Path) -> bool {
+        let entry = shell_path(entry);
         let current = chat_dirs_of(self.sandbox().root());
-        current.iter().chain(self.old_chat_dirs.read().unwrap().iter()).any(|d| d.starts_with(entry))
+        current.iter().chain(self.old_chat_dirs.read().unwrap().iter()).any(|d| shell_path(d).starts_with(&entry))
     }
 
     /// Records, before a chat file is saved under `root`, that its chat
     /// folders stay host-only for good (`Db::chat_roots`).
     pub fn remember_chat_root(&self, root: &Path) -> anyhow::Result<()> {
         if self.db.remember_chat_root(&root.to_string_lossy())? {
-            self.old_chat_dirs.write().unwrap().extend(protected_dirs(root));
+            self.old_chat_dirs.write().unwrap().extend(chat_dirs_of(root));
         }
         Ok(())
     }
@@ -392,13 +388,9 @@ impl AppState {
 
     fn replace_sandbox(&self, sb: Sandbox) {
         let previous = std::mem::replace(&mut *self.sandbox.write().unwrap(), sb);
-        // Recorded with its first chat file already, unless an older version saved them.
-        if has_chat_dirs(previous.root())
-            && let Err(e) = self.remember_chat_root(previous.root())
-        {
-            tracing::warn!("could not record the previous shared folder's chat folders: {e}");
-            self.old_chat_dirs.write().unwrap().extend(protected_dirs(previous.root()));
-        }
+        // Recorded for good with its first chat file (or at startup); paths
+        // only here, the old folder may be on a disk that is gone.
+        self.old_chat_dirs.write().unwrap().extend(chat_dirs_of(previous.root()));
     }
 
     pub fn emit(&self, audience: Audience, name: &'static str, data: &impl serde::Serialize) {

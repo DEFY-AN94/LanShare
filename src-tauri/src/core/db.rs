@@ -156,7 +156,6 @@ impl Db {
         // secure_delete overwrites deleted rows with zeros, so cleared chats
         // cannot be read back out of the database file.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;")?;
-        let had_chat_roots: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_roots'", [], |r| r.get(0))?;
         conn.execute_batch(SCHEMA)?;
         // Databases created before attachments remembered their root and their file.
         for (column, kind) in [("file_root", "TEXT"), ("file_created", "INTEGER")] {
@@ -173,13 +172,11 @@ impl Db {
                  UPDATE devices SET read_through = (SELECT COALESCE(MAX(id), 0) FROM messages);",
             )?;
         }
-        if had_chat_roots == 0 {
-            // Upgrades: the folders that attachments still remember held chat files.
-            conn.execute(
-                "INSERT OR IGNORE INTO chat_roots (root, added_at) SELECT DISTINCT file_root, ?1 FROM messages WHERE file_root IS NOT NULL",
-                params![now_ms()],
-            )?;
-        }
+        // Upgrades (and any start): the folders that attachments remember held chat files.
+        conn.execute(
+            "INSERT OR IGNORE INTO chat_roots (root, added_at) SELECT DISTINCT file_root, ?1 FROM messages WHERE file_root IS NOT NULL",
+            params![now_ms()],
+        )?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
             // Builds before secure_delete left deleted text in free pages:
@@ -484,6 +481,20 @@ impl Db {
     /// Records that chat files are saved under `root`; true the first time.
     pub fn remember_chat_root(&self, root: &str) -> Result<bool> {
         Ok(self.conn().execute("INSERT OR IGNORE INTO chat_roots (root, added_at) VALUES (?1, ?2)", params![root, now_ms()])? > 0)
+    }
+
+    /// Attachments saved outside the given chat folders, as (root, path):
+    /// earlier versions followed a chat folder that was a link.
+    pub fn attachments_outside(&self, chat_dirs: &[&str]) -> Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut sql = "SELECT DISTINCT file_root, file_path FROM messages WHERE kind = 'file' AND file_root IS NOT NULL AND file_path IS NOT NULL".to_string();
+        for i in 1..=chat_dirs.len() {
+            sql.push_str(&format!(" AND file_path NOT LIKE ?{i}"));
+        }
+        let prefixes: Vec<String> = chat_dirs.iter().map(|d| format!("{d}/%")).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(prefixes.iter()), |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+        Ok(rows)
     }
 
     /// Shared folders chat files were ever saved under, and those the

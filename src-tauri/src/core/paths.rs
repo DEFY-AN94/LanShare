@@ -179,30 +179,38 @@ impl Sandbox {
         if p.is_file() { Ok(p) } else { Err(PathError::Invalid) }
     }
 
-    /// Ensures `<root>/<name>` exists as a directory (used for 收件箱 / 已发送).
-    /// Creates that one folder only, never the root above it (see `check_root`).
-    /// A link there is refused rather than followed: chat files would land in
-    /// whatever ordinary folder it points to, where phones can browse them.
-    pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, PathError> {
+    /// Whether `<root>/<name>` (收件箱 / 已发送) can take chat files: missing
+    /// (it will be created) or a plain folder. A link there, or anything else,
+    /// is refused rather than followed: chat files would land in whatever
+    /// folder it points to, where phones can browse them.
+    pub fn check_subdir(&self, name: &str) -> Result<(), PathError> {
         validate_segment(name)?;
         let p = self.root.join(name);
+        match std::fs::symlink_metadata(&p) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+            // Windows junctions count as links here too.
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => Err(PathError::NotPlainFolder),
+            Ok(_) if std::fs::canonicalize(&p)? != self.root_canon.join(name) => Err(PathError::NotPlainFolder),
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// Ensures `<root>/<name>` exists as a plain directory (used for 收件箱 /
+    /// 已发送; see `check_subdir`). Creates that one folder only, never the
+    /// root above it (see `check_root`).
+    pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, PathError> {
+        self.check_subdir(name)?;
+        let p = self.root.join(name);
         if let Err(e) = std::fs::create_dir(&p)
-            && !(e.kind() == io::ErrorKind::AlreadyExists && p.is_dir())
+            && e.kind() != io::ErrorKind::AlreadyExists
         {
             return Err(e.into());
         }
-        // Windows junctions count as links here too.
-        if std::fs::symlink_metadata(&p)?.file_type().is_symlink() {
-            return Err(PathError::NotPlainFolder);
-        }
+        // Again: something else may have been put there meanwhile.
+        self.check_subdir(name)?;
         let canon = std::fs::canonicalize(&p)?;
         self.check(&canon)?;
-        if !canon.is_dir() {
-            return Err(PathError::Invalid);
-        }
-        if canon != self.root_canon.join(name) {
-            return Err(PathError::NotPlainFolder);
-        }
         Ok(friendly(&canon))
     }
 
