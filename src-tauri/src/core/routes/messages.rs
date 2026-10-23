@@ -78,8 +78,9 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
         if !session.can_write() {
             return Err(ApiError::forbidden("这台设备只有读取权限，不能删除电脑上的文件"));
         }
+        let check = state.path_check().await;
         if let Some(path) = state.attachment_path(&msg) {
-            super::files::trash(path).await?;
+            super::files::trash(path, check).await?;
             state.emit_files_changed(rel.rsplit_once('/').map(|(d, _)| d).unwrap_or(""));
         }
     }
@@ -110,6 +111,8 @@ pub async fn file(
         return Err(ApiError::not_found("消息不存在"));
     }
     let rel = msg.file_path.as_deref().ok_or_else(|| ApiError::not_found("这条消息没有文件"))?;
+    // Until serve_path has opened the file (see AppState::path_check).
+    let _check = state.path_check().await;
     let path = state.attachment_path(&msg).ok_or_else(|| ApiError::not_found("文件已被移动或删除"))?;
     let name = msg.file_name.clone().unwrap_or_else(|| rel.rsplit('/').next().unwrap_or("file").to_string());
     let (parts, _) = req.into_parts();

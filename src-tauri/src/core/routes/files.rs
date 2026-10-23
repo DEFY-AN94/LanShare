@@ -10,6 +10,7 @@ use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::core::auth::Session;
 use crate::core::error::{ApiError, ApiResult};
@@ -140,6 +141,7 @@ pub struct PathQuery {
 
 pub async fn list(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>) -> ApiResult<Json<DirListing>> {
     require_visible(&session, &q.path)?;
+    let check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&q.path)?;
     require_visible_at(&session, &state, &dir)?;
@@ -147,6 +149,7 @@ pub async fn list(State(state): State<Shared>, Extension(session): Extension<Ses
     let (sb, st) = (sandbox.clone(), state.clone());
     let hide_chat = !session.is_host();
     let entries = tokio::task::spawn_blocking(move || {
+        let _check = check;
         let mut entries = list_dir(&sb, &dir)?;
         if hide_chat {
             entries.retain(|e| !leads_into_chat_folder(&st, &sb, e));
@@ -160,6 +163,8 @@ pub async fn list(State(state): State<Shared>, Extension(session): Extension<Ses
 
 pub async fn download(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>, req: Request) -> ApiResult<Response> {
     require_visible(&session, &q.path)?;
+    // Until serve_path has opened the file; the body streams from that handle.
+    let _check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let path = sandbox.resolve_file(&q.path)?;
     require_visible_at(&session, &state, &path)?;
@@ -263,6 +268,7 @@ pub struct MkdirBody {
 pub async fn mkdir(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<MkdirBody>) -> ApiResult<Json<FileEntry>> {
     require_write(&session)?;
     require_visible(&session, &b.dir)?;
+    let _check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&b.dir)?;
     require_visible_at(&session, &state, &dir)?;
@@ -286,6 +292,8 @@ pub struct RenameBody {
 pub async fn rename(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<RenameBody>) -> ApiResult<Json<FileEntry>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
+    // Waits for paths being checked and opened elsewhere (see AppState::path_check).
+    let _change = state.path_change().await.ok_or_else(|| ApiError::conflict("有文件正在打开或保存，请稍后再试"))?;
     let sandbox = state.usable_sandbox()?;
     // resolve_entry: renaming a symlink renames the link, not its target.
     let src = sandbox.resolve_entry(&b.path)?;
@@ -343,15 +351,20 @@ pub fn move_to_trash(path: &FsPath) -> Result<(), trash::Error> {
 }
 
 /// Moves `target` to the Trash / Recycle Bin; refused where Windows keeps no
-/// Recycle Bin, so nothing is ever deleted for good.
-pub(super) async fn trash(target: std::path::PathBuf) -> ApiResult<()> {
+/// Recycle Bin, so nothing is ever deleted for good. `check` was held since
+/// `target` was checked and is let go only when the move is done, even if
+/// the request goes away first.
+pub(super) async fn trash(target: std::path::PathBuf, check: OwnedRwLockReadGuard<()>) -> ApiResult<()> {
     #[cfg(windows)]
     if !has_recycle_bin(&target) {
         return Err(ApiError::conflict("这个位置（U 盘或网络共享）没有回收站，为避免永久删除，请在电脑上处理这个文件"));
     }
     // A fresh thread each time: on Windows the trash crate sets up COM per
     // thread and aborts if a pooled thread was already initialised differently.
-    tokio::task::spawn_blocking(move || std::thread::spawn(move || move_to_trash(&target)).join())
+    tokio::task::spawn_blocking(move || {
+        let _check = check;
+        std::thread::spawn(move || move_to_trash(&target)).join()
+    })
         .await
         .map_err(ApiError::internal)?
         .map_err(|_| ApiError::internal("trash thread panicked"))?
@@ -370,6 +383,7 @@ fn trash_failure(e: &trash::Error) -> String {
 pub async fn delete(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<DeleteBody>) -> ApiResult<Json<Value>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
+    let check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     // Deleting a symlink removes the link only (trash keeps the last component).
     let target = sandbox.resolve_entry(&b.path).map_err(|e| match e {
@@ -382,7 +396,7 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
     }
     require_no_chat_folder_inside(&session, &state, &target)?;
     let parent_rel = target.parent().and_then(|p| sandbox.relative(p)).unwrap_or_default();
-    trash(target).await?;
+    trash(target, check).await?;
     state.emit_files_changed(&parent_rel);
     Ok(Json(json!({ "ok": true })))
 }

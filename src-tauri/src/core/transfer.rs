@@ -324,7 +324,11 @@ pub async fn receive_upload(
     let _ = tokio::task::spawn_blocking(move || sweep_stale_parts(&dir_owned, Duration::from_secs(24 * 3600))).await;
 
     let mut tmp = TempFile { path: dir.join(format!(".lanshare-{}.part", random_hex(8))), keep: false };
-    let file = tokio::fs::File::create(&tmp.path).await?;
+    let file = {
+        let _check = state.path_check().await;
+        still_the_checked_folder(dir)?;
+        tokio::fs::File::create(&tmp.path).await?
+    };
     let mut out = BufWriter::with_capacity(1 << 20, file);
     let mut stream = body.into_data_stream();
     let mut total: u64 = 0;
@@ -350,6 +354,8 @@ pub async fn receive_upload(
     // file that looks complete but is not.
     out.into_inner().sync_all().await?;
 
+    let _check = state.path_check().await;
+    still_the_checked_folder(dir)?;
     let _guard = state.upload_lock.lock().await;
     let target = unique_path(dir, name);
     #[cfg(windows)]
@@ -362,6 +368,18 @@ pub async fn receive_upload(
         mark_quarantined(&target);
     }
     Ok((target, total))
+}
+
+/// An upload's folder must still be the one that was checked: a phone's
+/// rename may have put a link in its place meanwhile (`AppState::path_check`
+/// keeps that from happening while this is asked).
+fn still_the_checked_folder(dir: &Path) -> ApiResult<()> {
+    // Gone altogether (an unplugged disk) is reported as such by the caller.
+    if dunce::canonicalize(dir)? == dir {
+        Ok(())
+    } else {
+        Err(ApiError::conflict("上传的目标文件夹刚被改动，请重新上传"))
+    }
 }
 
 /// Windows file-system tunneling gives a file that takes a name the creation

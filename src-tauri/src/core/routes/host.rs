@@ -275,8 +275,9 @@ pub struct PathBody {
 
 /// Opens with the default app; launchable files are revealed in the folder instead.
 pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
+    let check = state.path_check().await;
     let path = state.usable_sandbox()?.resolve_existing(&b.path)?;
-    let action = quick::open_or_reveal(&state, path).await?;
+    let action = quick::open_or_reveal(&state, path, check).await?;
     Ok(Json(json!({ "action": action })))
 }
 
@@ -293,9 +294,16 @@ pub async fn reveal_message_file(State(state): State<Shared>, Path(id): Path<i64
 }
 
 pub async fn reveal(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<StatusCode> {
+    let check = state.path_check().await;
     let path = state.usable_sandbox()?.resolve_existing(&b.path)?;
     let bridge = state.bridge.clone();
-    tokio::task::spawn_blocking(move || bridge.reveal_path(&path)).await.map_err(ApiError::internal)?.map_err(|_| shell_failed())?;
+    tokio::task::spawn_blocking(move || {
+        let _check = check;
+        bridge.reveal_path(&path)
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(|_| shell_failed())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
