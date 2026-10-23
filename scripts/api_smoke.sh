@@ -5,7 +5,9 @@
 #   PHONE_OVERRIDE=https://127.0.0.1:39210 scripts/api_smoke.sh .
 #
 # PHONE_OVERRIDE avoids the macOS firewall prompt for the unsigned test binary;
-# without it the script talks to the LAN address printed in the log.
+# without it the script talks to the LAN address printed in the log. Phone
+# requests are checked against the CA the server hands out on its loopback port,
+# so certificate checks are never skipped.
 # It pairs a fake phone, so run it against a throwaway .dev-data directory.
 set -u
 P="$1"
@@ -18,7 +20,7 @@ T=$(mktemp -d)
 pass=0; fail=0
 ok()   { echo "  ok   $1"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $1"; fail=$((fail+1)); }
-check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected $3, got $2)"; fi; }
+check() { if [ -n "$2" ] && [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected $3, got $2)"; fi; }
 contains() { if echo "$2" | grep -q -- "$3"; then ok "$1"; else bad "$1 (missing '$3' in: $(echo "$2" | head -c 300))"; fi; }
 
 HOSTURL=$(grep -o 'http://127.0.0.1:[0-9]*/__local_login?token=[A-Za-z0-9_-]*' "$LOG" | head -1)
@@ -27,8 +29,13 @@ PHONE=${PHONE_OVERRIDE:-$PHONE_FROM_LOG}
 LOCAL=$(echo "$HOSTURL" | sed 's#/__local_login.*##')
 echo "host: $LOCAL  phone: $PHONE"
 H=(-s -c "$T/host.jar" -b "$T/host.jar")
-D=(-s -k -c "$T/dev.jar" -b "$T/dev.jar")
+# Schannel (curl on Windows runners) also wants revocation data, which a local CA never has.
+TLS=(-sS --ssl-revoke-best-effort --cacert "$T/ca.pem")
+D=("${TLS[@]}" -c "$T/dev.jar" -b "$T/dev.jar")
 X=(-H "X-LanShare: 1")
+curl "${H[@]}" -o "$T/ca.pem" "$LOCAL/api/ca.crt"
+grep -q 'BEGIN CERTIFICATE' "$T/ca.pem" || { echo "no CA from $LOCAL (is the server in the log still running?)" >&2; rm -rf "$T"; exit 1; }
+curl "${TLS[@]}" -o /dev/null "$PHONE/api/ca" || { echo "TLS to $PHONE does not verify against the CA from $LOCAL" >&2; rm -rf "$T"; exit 1; }
 
 echo "== host login"
 check "local login redirects" "$(curl "${H[@]}" -o /dev/null -w '%{http_code}' "$HOSTURL")" 303
@@ -50,7 +57,7 @@ contains "host sees pending request" "$(curl "${H[@]}" "$LOCAL/api/host/pairing/
 check "approve" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -X POST "$LOCAL/api/host/pairing/requests/$RID/approve")" 200
 check "status approved" "$(curl "${D[@]}" "$PHONE/api/pair/status/$RID" | py -c 'import sys,json;print(json.load(sys.stdin)["status"])')" approved
 grep -q ls_dev "$T/dev.jar" && ok "device cookie stored" || bad "device cookie stored"
-check "approval cannot be claimed twice" "$(curl -s -k "$PHONE/api/pair/status/$RID" | py -c 'import sys,json;print(json.load(sys.stdin)["status"])')" expired
+check "approval cannot be claimed twice" "$(curl "${TLS[@]}" "$PHONE/api/pair/status/$RID" | py -c 'import sys,json;print(json.load(sys.stdin)["status"])')" expired
 ME=$(curl "${D[@]}" "$PHONE/api/me")
 check "device /api/me" "$(echo "$ME" | py -c 'import sys,json;print(json.load(sys.stdin)["kind"])')" device
 DEV=$(echo "$ME" | py -c 'import sys,json;print(json.load(sys.stdin)["device_id"])')
@@ -58,7 +65,7 @@ DEV=$(echo "$ME" | py -c 'import sys,json;print(json.load(sys.stdin)["device_id"
 echo "== authorization boundaries"
 check "device cannot call host API" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' "$PHONE/api/host/devices")" 403
 check "local login not available on LAN" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' "$PHONE/__local_login?token=x")" 404
-check "tampered device cookie rejected" "$(curl -s -k -o /dev/null -w '%{http_code}' -b "ls_dev=$DEV.wrongsecret" "$PHONE/api/me")" 401
+check "tampered device cookie rejected" "$(curl "${TLS[@]}" -o /dev/null -w '%{http_code}' -b "ls_dev=$DEV.wrongsecret" "$PHONE/api/me")" 401
 check "foreign Origin rejected" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Origin: https://evil.example' -H 'Content-Type: application/json' -d '{"text":"x"}' "$PHONE/api/messages")" 403
 
 echo "== messages"
@@ -77,15 +84,24 @@ contains "device sends a file" "$FM" '"path":"收件箱/IMG_0001.jpg"'
 FID=$(echo "$FM" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 curl "${H[@]}" -o "$T/back.jpg" "$LOCAL/api/messages/$FID/file"
 cmp -s "$T/pic.jpg" "$T/back.jpg" && ok "host downloads identical file" || bad "host downloads identical file"
+# Errors carry no-store too, so check that each answer really is the file.
+PH=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/messages/$FID/file")
+contains "phone downloads its own attachment" "$PH" 'content-disposition: attachment'
+contains "phone keeps no cached copy of an attachment" "$PH" 'cache-control: no-store'
+HH=$(curl "${H[@]}" -D - -o /dev/null "$LOCAL/api/messages/$FID/file")
+contains "host attachment answer is the file" "$HH" 'content-disposition: attachment'
+contains "host keeps no cached copy of an attachment" "$HH" 'cache-control: no-store'
 FM2=$(curl "${D[@]}" "${X[@]}" --data-binary @"$T/pic.jpg" "$PHONE/api/messages/upload?client_id=f-1&name=IMG_0001.jpg")
 check "file upload retry is idempotent" "$(echo "$FM2" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')" "$FID"
-DM=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d '{"client_id":"del-1","text":"delete me"}' "$PHONE/api/messages" | py -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+# Server data is only ever passed to Python as data, never spliced into its code.
+DM=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d '{"client_id":"del-1","text":"delete me"}' "$PHONE/api/messages" | py -c 'import sys,json;i=json.load(sys.stdin)["id"];print(i if type(i) is int else "")')
+case "$DM" in ''|*[!0-9]*) bad "new message has a numeric id (got '$DM')";; esac
 check "device deletes its own message" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -X DELETE "$PHONE/api/messages/$DM")" 204
-check "deleted message is gone" "$(curl "${D[@]}" "$PHONE/api/messages?limit=50" | py -c "import sys,json;print(any(m['id']==$DM for m in json.load(sys.stdin)['messages']))")" False
+check "deleted message is gone" "$(curl "${D[@]}" "$PHONE/api/messages?limit=50" | py -c 'import sys,json;print(any(m["id"]==int(sys.argv[1]) for m in json.load(sys.stdin)["messages"]))' "$DM")" False
 check "a late retry of the deleted message is refused" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"client_id":"del-1","text":"delete me"}' "$PHONE/api/messages")" 410
 
 echo "== SSE"
-( curl "${D[@]}" -N --max-time 3 "$PHONE/api/events" > "$T/sse.txt" ) &
+( curl "${D[@]}" -N --max-time 3 "$PHONE/api/events" > "$T/sse.txt" 2>/dev/null ) &
 sleep 1
 curl "${H[@]}" "${X[@]}" -o /dev/null -H 'Content-Type: application/json' -d "{\"device\":\"$DEV\",\"text\":\"live\"}" "$LOCAL/api/messages"
 wait
@@ -136,6 +152,7 @@ curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/x.html" "$PHONE/api/fil
 HDR=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.html&inline=1")
 contains "html served as text/plain" "$HDR" 'content-type: text/plain; charset=utf-8'
 contains "inline files sandboxed" "$HDR" 'content-security-policy: sandbox'
+contains "files are not cached" "$HDR" 'cache-control: no-store'
 printf '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>' > "$T/x.svg"
 curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/x.svg" "$PHONE/api/files/upload?dir=&name=x.svg"
 SVG=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.svg&inline=1")
@@ -161,14 +178,15 @@ check "removed device locked out" "$(curl "${D[@]}" -o /dev/null -w '%{http_code
 echo "== 6-digit code path"
 S2=$(curl "${H[@]}" "${X[@]}" -X POST "$LOCAL/api/host/pairing")
 CODE=$(echo "$S2" | py -c 'import sys,json;print(json.load(sys.stdin)["code"])')
-check "wrong code rejected" "$(curl -s -k "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"code":"000000","name":"x"}' "$PHONE/api/pair/request")" 403
-check "right code accepted" "$(curl -s -k "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"code\":\"$CODE\",\"name\":\"code-phone\"}" "$PHONE/api/pair/request")" 200
+check "wrong code rejected" "$(curl "${TLS[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"code":"000000","name":"x"}' "$PHONE/api/pair/request")" 403
+check "right code accepted" "$(curl "${TLS[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"code\":\"$CODE\",\"name\":\"code-phone\"}" "$PHONE/api/pair/request")" 200
 
 echo "== TLS"
-CERT=$(echo | openssl s_client -connect "${PHONE#https://}" -alpn h2 2>/dev/null)
+CERT=$(echo | openssl s_client -connect "${PHONE#https://}" -alpn h2 -CAfile "$T/ca.pem" 2>/dev/null)
 contains "ALPN h2 negotiated" "$CERT" 'ALPN protocol: h2'
 contains "chain includes local CA" "$CERT" 'LanShare Local CA'
-CANAME=$(curl -s -k "$PHONE/api/ca" | py -c 'import sys,json;print(json.load(sys.stdin)["name"])')
+contains "leaf verifies against the local CA" "$CERT" 'Verify return code: 0'
+CANAME=$(curl "${TLS[@]}" "$PHONE/api/ca" | py -c 'import sys,json;print(json.load(sys.stdin)["name"])')
 contains "CA name has its own tag" "$CANAME" '^LanShare Local CA (.*) [0-9A-F]\{6\}$'
 contains "served CA is the one /api/ca names" "$CERT" "i:.*CN *= *$CANAME"
 HN=$(curl "${H[@]}" "$LOCAL/api/host/overview" | py -c 'import sys,json;print(json.load(sys.stdin)["host_name"])')

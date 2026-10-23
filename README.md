@@ -10,7 +10,7 @@ Send messages and files between an iPhone and a computer over your local network
 - **Messages**: an iMessage-style chat with a quick copy button next to every text message. Photos and files can be sent straight from the chat.
 - **Files**: the iPhone browses a shared folder on the computer (`~/LanShare` by default) and can upload, download, preview, rename and delete (deleted files go to the Trash or Recycle Bin).
 - **No iPhone app to install**: scan a QR code to open LanShare in Safari, and add it to the Home Screen if you like.
-- **Secure**: all network traffic is HTTPS; every pairing must be approved on the computer; only connections from the local network are accepted; phones can only reach the shared folder.
+- **Secure**: all network traffic is HTTPS; every pairing must be approved on the computer; only private-network addresses are accepted (on Windows, the installer's firewall rule further limits this to the local subnet); phones can only reach the shared folder.
 
 Status: the Mac version is done. The Windows version is built, tested and packaged by GitHub Actions (milestone M6 in PLAN.md).
 
@@ -34,7 +34,7 @@ While an upload runs, the iPhone's screen stays on and the computer does not go 
 
 Settings › **启动** (Startup) can start LanShare when you log in to the Mac (or to Windows), hidden in the menu bar or tray. It is off by default, and LanShare suggests it once after your first pairing. macOS lists it under System Settings › General › Login Items.
 
-Notifications for phone messages have buttons. **复制** (Copy) copies the whole text, not just the preview, and **打开** (Open) opens a file; programs and scripts are only shown in their folder. Clicking a notification opens that conversation. When one phone sends many messages in a row, only the first two pop up and the rest are summed up. The unread count shows on the Dock icon (next to the menu bar icon while LanShare has no Dock icon; in the tray tooltip on Windows). Settings › **通知** (Notifications) can leave message text out of notifications.
+Notifications for phone messages have buttons. **复制** (Copy) copies the whole text, not just the preview, and **打开** (Open) opens a file; programs, scripts, installers, disk images, profiles and certificates are only shown in their folder. Clicking a notification opens that conversation. When one phone sends many messages in a row, only the first two pop up and the rest are summed up. The unread count shows on the Dock icon (next to the menu bar icon while LanShare has no Dock icon; in the tray tooltip on Windows). Settings › **通知** (Notifications) can leave message text out of notifications.
 
 The menu bar / tray menu also works the other way round: **发送剪贴板到…** (Send clipboard to…) sends the text, screenshot or picture you copied on the computer to a phone (the most recent conversation, or a device you pick), and **复制最近收到的文字** (Copy latest received text) puts the newest text from a phone on the clipboard. Settings › **剪贴板** (Clipboard) can add a global shortcut for sending, with at least two modifier keys, one of them Control or Command (such as ⌃⌥⌘V); none is set by default. LanShare reads the clipboard only when you do one of these.
 

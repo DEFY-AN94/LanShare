@@ -323,18 +323,23 @@ async fn notification_buttons_copy_open_and_show() {
     assert_eq!(quick::copy_latest_received(state).unwrap(), "iPhone");
     assert_eq!(bridge.copied.lock().unwrap().last().unwrap(), &long);
 
-    // 打开: a document opens; something that would run is only shown in its folder.
+    // 打开: a document opens; something that would run or install is only shown in its folder.
     let pdf = phone_sends_file(&e, &cookie, "plan.pdf", b"%PDF").await;
     let exe = phone_sends_file(&e, &cookie, "setup.exe", b"MZ").await;
+    let profile = phone_sends_file(&e, &cookie, "wifi.mobileconfig", b"<?xml").await;
     quick::on_notification(state, quick::ACTION_OPEN, Some(pdf), Some(&id)).await;
     quick::on_notification(state, quick::ACTION_OPEN, Some(exe), Some(&id)).await;
+    quick::on_notification(state, quick::ACTION_OPEN, Some(profile), Some(&id)).await;
     let opened = bridge.opened.lock().unwrap().clone();
     assert_eq!(opened.iter().map(|(how, p)| (*how, p.file_name().unwrap().to_string_lossy().into_owned())).collect::<Vec<_>>(), [
         ("open", "plan.pdf".to_string()),
-        ("reveal", "setup.exe".to_string())
+        ("reveal", "setup.exe".to_string()),
+        ("reveal", "wifi.mobileconfig".to_string())
     ]);
-    let r = send(&e.local, host_req(Method::POST, &format!("/api/host/messages/{exe}/open"), Some(json!({})))).await;
-    assert_eq!(r.json()["action"], "revealed");
+    for msg in [exe, profile] {
+        let r = send(&e.local, host_req(Method::POST, &format!("/api/host/messages/{msg}/open"), Some(json!({})))).await;
+        assert_eq!(r.json()["action"], "revealed");
+    }
     // 在文件夹中显示 finds the file by its message too.
     let r = send(&e.local, host_req(Method::POST, &format!("/api/host/messages/{pdf}/reveal"), Some(json!({})))).await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);

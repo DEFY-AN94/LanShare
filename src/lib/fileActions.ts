@@ -3,17 +3,19 @@
 
 import { api } from "./api";
 
-/** Opens with the default app. Apps/scripts are only revealed in the folder. */
+const REVEALED = "为了安全，程序、脚本、安装包、磁盘映像、描述文件和证书不会直接打开，已在文件夹中显示";
+
+/** Opens with the default app. Anything that would run, mount or install is only revealed in the folder. */
 export async function hostOpen(path: string, notify?: (msg: string) => void) {
   const res = await api.post<{ action?: string }>("/api/host/open", { path });
-  if (res?.action === "revealed") notify?.("为了安全，程序和脚本类文件不会直接打开，已在文件夹中显示");
+  if (res?.action === "revealed") notify?.(REVEALED);
   return res;
 }
 
 /** A chat attachment, wherever it was saved (also in an earlier shared folder). */
 export async function hostOpenMessageFile(id: number, notify?: (msg: string) => void) {
   const res = await api.post<{ action?: string }>(`/api/host/messages/${id}/open`);
-  if (res?.action === "revealed") notify?.("为了安全，程序和脚本类文件不会直接打开，已在文件夹中显示");
+  if (res?.action === "revealed") notify?.(REVEALED);
   return res;
 }
 

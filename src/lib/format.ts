@@ -65,16 +65,17 @@ export interface TextPart {
 }
 
 const URL_RE = /https?:\/\/[^\s<>"'，。；！？、）】」』]+/gi;
-const TRAILING = /[.,;:!?)\]}'"]+$/;
+const TRAILING = ".,;:!?)]}'\"";
 
 /** Splits text into plain runs and http(s) links. Nothing else becomes a link. */
 export function splitLinks(text: string): TextPart[] {
   const parts: TextPart[] = [];
   let last = 0;
   for (const m of text.matchAll(URL_RE)) {
-    let url = m[0];
-    const trail = url.match(TRAILING)?.[0] ?? "";
-    if (trail) url = url.slice(0, -trail.length);
+    // A loop, not /[...]+$/: that regex retries a long punctuation run from every position.
+    let end = m[0].length;
+    while (end > 0 && TRAILING.includes(m[0][end - 1])) end--;
+    const url = m[0].slice(0, end);
     const start = m.index ?? 0;
     if (start > last) parts.push({ text: text.slice(last, start) });
     parts.push({ text: url, href: url });
