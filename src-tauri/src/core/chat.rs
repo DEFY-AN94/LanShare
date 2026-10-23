@@ -126,12 +126,13 @@ pub async fn store_upload(state: &Shared, session: &Session, q: &UploadRequest, 
     let name = sanitize_filename(&q.name).ok_or_else(|| ApiError::bad_request("文件名无效"))?;
     let length = upload_length(declared, q.size)?;
     let sandbox = state.usable_sandbox()?;
+    let check = state.path_check().await;
     let dir = sandbox.ensure_subdir(if session.is_host() { SENT_DIR } else { INBOX_DIR })?;
     let mut reservation = preflight(state, &dir, length)?;
     // Before the first byte lands: these chat folders stay host-only for good.
     state.remember_chat_root(sandbox.root()).map_err(ApiError::internal)?;
     let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
-    let (path, size) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut()).await?;
+    let (path, size) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut(), check).await?;
     let created = std::fs::metadata(&path).ok().as_ref().and_then(created_ms);
     let rel = sandbox.relative(&path).ok_or_else(|| ApiError::internal("upload landed outside the shared folder"))?;
     let final_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);

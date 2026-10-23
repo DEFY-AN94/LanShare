@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use mime_guess::Mime;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::OwnedRwLockReadGuard;
 use tower::ServiceExt as _;
 use tower_http::services::ServeFile;
 
@@ -19,7 +20,7 @@ use super::auth::Session;
 use super::disk::{self, FAT_MAX_FILE, human_size};
 use super::error::{ApiError, ApiResult};
 use super::paths::unique_path;
-use super::state::Shared;
+use super::state::{PATH_CHANGE_WAIT, Shared};
 use super::util::random_hex;
 
 /// RFC 8187 attr-char: everything else is percent-encoded in `filename*`.
@@ -306,10 +307,49 @@ pub fn upload_length(declared: Option<u64>, size: Option<u64>) -> ApiResult<u64>
     }
 }
 
+/// Runs blocking work on paths checked under `check` (`AppState::path_check`)
+/// and keeps the check until the work is done, also if the request goes away
+/// meanwhile, but no longer than `PATH_CHANGE_WAIT`: a system prompt (a
+/// Windows "delete for good?" dialog) must not hold up every rename.
+pub async fn checked_blocking<T: Send + 'static>(check: OwnedRwLockReadGuard<()>, work: impl FnOnce() -> T + Send + 'static) -> ApiResult<T> {
+    let mut work = tokio::task::spawn_blocking(work);
+    let (done, result) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let out = match tokio::time::timeout(PATH_CHANGE_WAIT, &mut work).await {
+            Ok(out) => out,
+            Err(_) => {
+                drop(check);
+                work.await
+            }
+        };
+        let _ = done.send(out);
+    });
+    result.await.map_err(ApiError::internal)?.map_err(ApiError::internal)
+}
+
+/// What a folder is, to tell later whether a rename put another in its place
+/// (a link given its name). A case-only rename keeps it.
+#[cfg(unix)]
+fn folder_id(dir: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(dir)?;
+    Ok((m.dev(), m.ino()))
+}
+
+/// Windows disks ignore case in names.
+#[cfg(not(unix))]
+fn folder_id(dir: &Path) -> std::io::Result<String> {
+    Ok(dunce::canonicalize(dir)?.to_string_lossy().to_lowercase())
+}
+
 /// Streams the request body into `dir/name` (renamed `name (1)` etc. on
 /// collision). Writes to a hidden temp file first so a half-finished upload
 /// never appears under its real name. `length` is what [`upload_length`]
-/// returned, and `reservation` what [`preflight`] gave before the body was taken.
+/// returned, and `reservation` what [`preflight`] gave before the body was
+/// taken. `check` was held since `dir` was checked: it is let go once the
+/// temp file exists, and taken again to move the finished file into place,
+/// in the same folder, so a long upload never holds up renames.
+#[allow(clippy::too_many_arguments)]
 pub async fn receive_upload(
     state: &Shared,
     session: &Session,
@@ -318,18 +358,19 @@ pub async fn receive_upload(
     name: &str,
     length: u64,
     mut reservation: Option<&mut Reservation>,
+    check: OwnedRwLockReadGuard<()>,
 ) -> ApiResult<(PathBuf, u64)> {
     let _awake = state.awake.hold();
-    let dir_owned = dir.to_path_buf();
-    let _ = tokio::task::spawn_blocking(move || sweep_stale_parts(&dir_owned, Duration::from_secs(24 * 3600))).await;
-
-    let mut tmp = TempFile { path: dir.join(format!(".lanshare-{}.part", random_hex(8))), keep: false };
-    let file = {
-        let _check = state.path_check().await;
-        still_the_checked_folder(dir)?;
-        tokio::fs::File::create(&tmp.path).await?
-    };
-    let mut out = BufWriter::with_capacity(1 << 20, file);
+    let tmp_path = dir.join(format!(".lanshare-{}.part", random_hex(8)));
+    let (d, t) = (dir.to_path_buf(), tmp_path.clone());
+    let (file, folder) = checked_blocking(check, move || -> std::io::Result<_> {
+        sweep_stale_parts(&d, Duration::from_secs(24 * 3600));
+        let folder = folder_id(&d)?;
+        Ok((std::fs::File::create(&t)?, folder))
+    })
+    .await??;
+    let mut tmp = TempFile { path: tmp_path, keep: false };
+    let mut out = BufWriter::with_capacity(1 << 20, tokio::fs::File::from_std(file));
     let mut stream = body.into_data_stream();
     let mut total: u64 = 0;
     while let Some(chunk) = stream.next().await {
@@ -354,32 +395,27 @@ pub async fn receive_upload(
     // file that looks complete but is not.
     out.into_inner().sync_all().await?;
 
-    let _check = state.path_check().await;
-    still_the_checked_folder(dir)?;
-    let _guard = state.upload_lock.lock().await;
-    let target = unique_path(dir, name);
-    #[cfg(windows)]
-    let created = std::fs::metadata(&tmp.path).and_then(|m| m.created()).ok();
-    tokio::fs::rename(&tmp.path, &target).await?;
+    let (st, d, t, n) = (state.clone(), dir.to_path_buf(), tmp.path.clone(), name.to_string());
+    let target = checked_blocking(state.path_check().await, move || -> ApiResult<PathBuf> {
+        // Gone altogether (an unplugged disk) is reported as such by the caller.
+        if folder_id(&d)? != folder {
+            return Err(ApiError::conflict("上传的目标文件夹刚被改动，请重新上传"));
+        }
+        let _guard = st.upload_lock.blocking_lock();
+        let target = unique_path(&d, &n);
+        #[cfg(windows)]
+        let created = std::fs::metadata(&t).and_then(|m| m.created()).ok();
+        std::fs::rename(&t, &target)?;
+        #[cfg(windows)]
+        keep_creation_time(&target, created);
+        Ok(target)
+    })
+    .await??;
     tmp.keep = true;
-    #[cfg(windows)]
-    keep_creation_time(&target, created);
     if !session.is_host() {
         mark_quarantined(&target);
     }
     Ok((target, total))
-}
-
-/// An upload's folder must still be the one that was checked: a phone's
-/// rename may have put a link in its place meanwhile (`AppState::path_check`
-/// keeps that from happening while this is asked).
-fn still_the_checked_folder(dir: &Path) -> ApiResult<()> {
-    // Gone altogether (an unplugged disk) is reported as such by the caller.
-    if dunce::canonicalize(dir)? == dir {
-        Ok(())
-    } else {
-        Err(ApiError::conflict("上传的目标文件夹刚被改动，请重新上传"))
-    }
 }
 
 /// Windows file-system tunneling gives a file that takes a name the creation

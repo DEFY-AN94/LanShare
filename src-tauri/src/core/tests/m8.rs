@@ -20,7 +20,7 @@ pub(super) struct RecordingBridge {
     shown: Mutex<Vec<String>>,
     pub(super) clipboard: Mutex<Option<Clip>>,
     copied: Mutex<Vec<String>>,
-    opened: Mutex<Vec<(&'static str, PathBuf)>>,
+    pub(super) opened: Mutex<Vec<(&'static str, PathBuf)>>,
     focused: AtomicBool,
     shortcut: Mutex<Option<String>>,
     refuse_shortcuts: AtomicBool,

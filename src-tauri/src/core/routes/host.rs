@@ -17,6 +17,7 @@ use crate::core::events::Audience;
 use crate::core::model::{DeviceOut, HostOverview, PairRequestOut, PairingSession, PairingUrl};
 use crate::core::paths::{Sandbox, unsafe_root_reason};
 use crate::core::state::Shared;
+use crate::core::transfer::checked_blocking;
 use crate::core::quick::{self, shell_failed};
 use crate::core::util::{now_ms, random_hex, random_token, sha256_hex};
 
@@ -297,13 +298,7 @@ pub async fn reveal(State(state): State<Shared>, Json(b): Json<PathBody>) -> Api
     let check = state.path_check().await;
     let path = state.usable_sandbox()?.resolve_existing(&b.path)?;
     let bridge = state.bridge.clone();
-    tokio::task::spawn_blocking(move || {
-        let _check = check;
-        bridge.reveal_path(&path)
-    })
-    .await
-    .map_err(ApiError::internal)?
-    .map_err(|_| shell_failed())?;
+    checked_blocking(check, move || bridge.reveal_path(&path)).await?.map_err(|_| shell_failed())?;
     Ok(StatusCode::NO_CONTENT)
 }
 

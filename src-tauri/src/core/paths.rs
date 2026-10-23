@@ -274,7 +274,8 @@ pub fn opened_file_is(file: &std::fs::File, path: &Path) -> bool {
         // SAFETY: a valid open handle and a buffer of the given length. Flags 0
         // give the same `\\?\` form std::fs::canonicalize returns.
         let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
-        n > 0 && n < buf.len() && std::fs::canonicalize(path).is_ok_and(|p| p == PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
+        let opened = std::ffi::OsString::from_wide(&buf[..buf.len().min(n)]);
+        n > 0 && n < buf.len() && std::fs::canonicalize(path).is_ok_and(|p| p.as_os_str() == opened.as_os_str())
     }
     #[cfg(not(any(unix, windows)))]
     {

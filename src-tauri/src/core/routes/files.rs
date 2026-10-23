@@ -18,7 +18,8 @@ use crate::core::model::{DirListing, FileEntry};
 use crate::core::paths::{Sandbox, sanitize_filename, segments};
 use crate::core::state::{AppState, INBOX_DIR, SENT_DIR, Shared, is_chat_path};
 use crate::core::transfer::{
-    REJECTED_UPLOAD_DRAIN, check_fits, declared_len, discard_body, preflight, receive_upload, serve_path, unless_root_gone, upload_length,
+    REJECTED_UPLOAD_DRAIN, check_fits, checked_blocking, declared_len, discard_body, preflight, receive_upload, serve_path, unless_root_gone,
+    upload_length,
 };
 
 fn require_write(session: &Session) -> ApiResult<()> {
@@ -94,10 +95,12 @@ fn modified_ms(meta: &std::fs::Metadata) -> i64 {
 }
 
 pub fn entry_for(sandbox: &Sandbox, path: &FsPath) -> Option<FileEntry> {
-    let meta = std::fs::metadata(path).ok()?;
+    let rel = sandbox.relative(path)?;
+    // A link that leads out of the shared folder tells nothing about its target.
+    let meta = if sandbox.resolve_existing(&rel).is_ok() { std::fs::metadata(path) } else { std::fs::symlink_metadata(path) }.ok()?;
     Some(FileEntry {
         name: path.file_name()?.to_string_lossy().into_owned(),
-        path: sandbox.relative(path)?,
+        path: rel,
         is_dir: meta.is_dir(),
         size: if meta.is_dir() { 0 } else { meta.len() },
         modified: modified_ms(&meta),
@@ -148,16 +151,14 @@ pub async fn list(State(state): State<Shared>, Extension(session): Extension<Ses
     let rel = sandbox.relative(&dir).unwrap_or_default();
     let (sb, st) = (sandbox.clone(), state.clone());
     let hide_chat = !session.is_host();
-    let entries = tokio::task::spawn_blocking(move || {
-        let _check = check;
+    let entries = checked_blocking(check, move || {
         let mut entries = list_dir(&sb, &dir)?;
         if hide_chat {
             entries.retain(|e| !leads_into_chat_folder(&st, &sb, e));
         }
         std::io::Result::Ok(entries)
     })
-    .await
-    .map_err(ApiError::internal)??;
+    .await??;
     Ok(Json(DirListing { path: rel, entries, can_write: session.can_write() }))
 }
 
@@ -203,6 +204,7 @@ pub async fn upload(
 async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, declared: Option<u64>, body: &mut Option<Body>) -> ApiResult<FileEntry> {
     require_write(session)?;
     require_visible(session, &q.dir)?;
+    let check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&q.dir)?;
     require_visible_at(session, state, &dir)?;
@@ -219,7 +221,7 @@ async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, declar
     let length = upload_length(declared, q.size)?;
     let mut reservation = preflight(state, &dir, length)?;
     let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
-    let (path, _) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut()).await?;
+    let (path, _) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut(), check).await?;
     if let Some(id) = upload_id {
         state.remember_upload(who, id, path.clone());
     }
@@ -352,8 +354,7 @@ pub fn move_to_trash(path: &FsPath) -> Result<(), trash::Error> {
 
 /// Moves `target` to the Trash / Recycle Bin; refused where Windows keeps no
 /// Recycle Bin, so nothing is ever deleted for good. `check` was held since
-/// `target` was checked and is let go only when the move is done, even if
-/// the request goes away first.
+/// `target` was checked (see `checked_blocking`).
 pub(super) async fn trash(target: std::path::PathBuf, check: OwnedRwLockReadGuard<()>) -> ApiResult<()> {
     #[cfg(windows)]
     if !has_recycle_bin(&target) {
@@ -361,12 +362,8 @@ pub(super) async fn trash(target: std::path::PathBuf, check: OwnedRwLockReadGuar
     }
     // A fresh thread each time: on Windows the trash crate sets up COM per
     // thread and aborts if a pooled thread was already initialised differently.
-    tokio::task::spawn_blocking(move || {
-        let _check = check;
-        std::thread::spawn(move || move_to_trash(&target)).join()
-    })
-        .await
-        .map_err(ApiError::internal)?
+    checked_blocking(check, move || std::thread::spawn(move || move_to_trash(&target)).join())
+        .await?
         .map_err(|_| ApiError::internal("trash thread panicked"))?
         .map_err(|e| ApiError::internal(format!("move to trash failed ({})", trash_failure(&e))))
 }

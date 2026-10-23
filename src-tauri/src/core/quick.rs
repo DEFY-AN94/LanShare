@@ -15,6 +15,7 @@ use super::events::Audience;
 use super::model::MessageOut;
 use super::paths::{Sandbox, opened_file_is};
 use super::state::{AppState, Shared, is_chat_path};
+use super::transfer::checked_blocking;
 
 /// The identifier of a notification's own button (`HostBridge::notify_message`).
 pub const ACTION_COPY: &str = "copy";
@@ -74,13 +75,7 @@ pub(crate) async fn open_or_reveal(state: &Shared, path: PathBuf, check: OwnedRw
     let bridge = state.bridge.clone();
     // Covers app bundles too (directories named *.app).
     let reveal = is_launchable(&path);
-    tokio::task::spawn_blocking(move || {
-        let _check = check;
-        if reveal { bridge.reveal_path(&path) } else { bridge.open_path(&path) }
-    })
-        .await
-        .map_err(ApiError::internal)?
-        .map_err(|_| shell_failed())?;
+    checked_blocking(check, move || if reveal { bridge.reveal_path(&path) } else { bridge.open_path(&path) }).await?.map_err(|_| shell_failed())?;
     Ok(if reveal { "revealed" } else { "opened" })
 }
 
@@ -104,13 +99,7 @@ pub async fn reveal_attachment(state: &Shared, message_id: i64) -> ApiResult<()>
     let check = state.path_check().await;
     let path = attachment(state, message_id)?;
     let bridge = state.bridge.clone();
-    tokio::task::spawn_blocking(move || {
-        let _check = check;
-        bridge.reveal_path(&path)
-    })
-    .await
-    .map_err(ApiError::internal)?
-    .map_err(|_| shell_failed())
+    checked_blocking(check, move || bridge.reveal_path(&path)).await?.map_err(|_| shell_failed())
 }
 
 /// Puts a message's full text on the clipboard (a notification shows 80 characters).
@@ -163,31 +152,38 @@ enum PictureError {
     Refused(String),
 }
 
+fn unreadable(e: std::io::Error) -> PictureError {
+    PictureError::Unreadable(if e.kind() == std::io::ErrorKind::NotFound { "复制的图片已经不在了" } else { "没能读取复制的图片" }.into())
+}
+
 /// A picture file from the clipboard, read from the very file that was
 /// checked: it is opened first, and a path checked afterwards must lead to
 /// it, so a phone's rename (an existing link given its name) cannot swap in
 /// another file. One in the shared folder goes out only if phones could
-/// download it there anyway, never from a chat folder.
+/// download it there anyway, never from a chat folder. The reading itself
+/// does not hold up renames.
 async fn read_picture(state: &Shared, path: &Path) -> Result<Vec<u8>, PictureError> {
-    let check = state.path_check().await;
     let (st, path) = (state.clone(), path.to_path_buf());
+    let file = checked_blocking(state.path_check().await, move || open_checked_picture(&st, &path))
+        .await
+        .map_err(|_| PictureError::Unreadable("没能读取复制的图片".into()))??;
     tokio::task::spawn_blocking(move || {
-        let _check = check;
-        read_checked_picture(&st, &path)
+        let mut bytes = Vec::new();
+        let mut file = file;
+        file.read_to_end(&mut bytes).map(|_| bytes)
     })
     .await
     .map_err(|_| PictureError::Unreadable("没能读取复制的图片".into()))?
+    .map_err(unreadable)
 }
 
-fn read_checked_picture(state: &AppState, path: &Path) -> Result<Vec<u8>, PictureError> {
-    let unreadable = |e: std::io::Error| {
-        PictureError::Unreadable(if e.kind() == std::io::ErrorKind::NotFound { "复制的图片已经不在了" } else { "没能读取复制的图片" }.into())
-    };
-    let mut file = std::fs::File::open(path).map_err(unreadable)?;
-    let real = dunce::canonicalize(path).map_err(unreadable)?;
-    if !opened_file_is(&file, &real) {
-        return Err(PictureError::Refused("复制的图片刚被改动，没有发送，请重新复制".into()));
-    }
+fn open_checked_picture(state: &AppState, path: &Path) -> Result<std::fs::File, PictureError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // A pipe given the picture's name would block the open: refused below instead.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(path).map_err(unreadable)?;
     let meta = file.metadata().map_err(unreadable)?;
     if !meta.is_file() {
         return Err(PictureError::Refused(FILES_NOT_SENT.into()));
@@ -196,12 +192,24 @@ fn read_checked_picture(state: &AppState, path: &Path) -> Result<Vec<u8>, Pictur
         return Err(PictureError::Refused("图片太大，请把它拖进 LanShare 的聊天窗口发送".into()));
     }
     let sandbox = state.sandbox();
-    if (sandbox.relative(path).is_some() || sandbox.relative(&real).is_some()) && !phones_can_download(state, &sandbox, &real) {
-        return Err(PictureError::Refused("这张图片在共享文件夹里手机打不开的位置（例如聊天文件夹），没有发送".into()));
+    // Where the copied name itself is: a path through a link elsewhere may still lead into the shared folder.
+    let at = path.parent().and_then(|p| dunce::canonicalize(p).ok()).zip(path.file_name()).map(|(d, n)| d.join(n));
+    let named_in_share = sandbox.relative(path).is_some() || at.as_deref().is_some_and(|a| sandbox.relative(a).is_some());
+    match dunce::canonicalize(path) {
+        Ok(real) => {
+            if !opened_file_is(&file, &real) {
+                return Err(PictureError::Refused("复制的图片刚被改动，没有发送，请重新复制".into()));
+            }
+            if (named_in_share || sandbox.relative(&real).is_some()) && !phones_can_download(state, &sandbox, &real) {
+                return Err(PictureError::Refused("这张图片在共享文件夹里手机打不开的位置（例如聊天文件夹），没有发送".into()));
+            }
+        }
+        // Some Windows volumes cannot name an open file's final path: fine
+        // for a picture from outside the shared folder, which phones cannot touch.
+        Err(_) if !named_in_share => {}
+        Err(e) => return Err(unreadable(e)),
     }
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    file.read_to_end(&mut bytes).map_err(unreadable)?;
-    Ok(bytes)
+    Ok(file)
 }
 
 /// Whether a phone browsing the shared folder could download `real`.
