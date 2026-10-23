@@ -7,6 +7,10 @@ src-tauri/gen/schemas/
 # Local test data
 .dev-data/
 
+# Claude Code: worktrees and personal settings stay local (.claude/CLAUDE.md is shared)
+.claude/worktrees/
+.claude/settings.local.json
+
 # OS / editor
 .DS_Store
 Thumbs.db
