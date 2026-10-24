@@ -171,10 +171,11 @@ pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_nam
 }
 
 /// Sends a download's body from a task of its own, which lets go of the file
-/// and of `awake` once the transfer is stopped or the phone has taken
-/// nothing for `TRANSFER_IDLE`: a body nobody reads is never polled, so it
-/// could not notice either by itself.
-fn pump(body: Body, stop: TransferStop, awake: AwakeGuard) -> Body {
+/// and of `awake` once the transfer is stopped, the response is gone, or
+/// nothing moved for `TRANSFER_IDLE` (a phone that takes nothing, a read
+/// stuck on a disk that went away): a body nobody reads is never polled, so
+/// it could not notice any of these by itself.
+pub(super) fn pump(body: Body, stop: TransferStop, awake: AwakeGuard) -> Body {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(1);
     let finished = Arc::new(AtomicBool::new(false));
     let done = finished.clone();
@@ -182,10 +183,14 @@ fn pump(body: Body, stop: TransferStop, awake: AwakeGuard) -> Body {
     tokio::spawn(async move {
         let _awake = awake;
         let mut data = body.into_data_stream();
+        let idle = tokio::time::sleep(TRANSFER_IDLE);
+        tokio::pin!(idle);
         loop {
             let chunk = tokio::select! {
                 biased;
                 _ = stop.stopped() => return,
+                _ = tx.closed() => return,
+                _ = &mut idle => return,
                 chunk = data.next() => chunk,
             };
             let chunk = match chunk {
@@ -199,9 +204,10 @@ fn pump(body: Body, stop: TransferStop, awake: AwakeGuard) -> Body {
             tokio::select! {
                 biased;
                 _ = stop.stopped() => return,
-                _ = tokio::time::sleep(TRANSFER_IDLE) => return,
+                _ = &mut idle => return,
                 sent = tx.send(chunk) => if sent.is_err() { return },
             }
+            idle.as_mut().reset(tokio::time::Instant::now() + TRANSFER_IDLE);
         }
     });
     // Ending early must fail the response, not end it as if complete.

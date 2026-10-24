@@ -143,6 +143,89 @@ async fn a_file_that_lands_as_its_phone_is_removed_is_not_kept() {
     }
 }
 
+/// An upload that goes away while its temp file is being created.
+#[tokio::test]
+async fn an_upload_dropped_as_it_starts_leaves_no_temp_file() {
+    for _ in 0..3 {
+        let e = env();
+        let cookie = pair(&e).await;
+        let (body, _polled) = silent_body();
+        let lan = e.lan.clone();
+        let upload = tokio::spawn(async move { send(&lan, dev_req(Method::POST, "/api/files/upload?dir=&name=gone.bin&size=1000", Some(&cookie), body, false)).await });
+        tokio::task::yield_now().await;
+        upload.abort();
+        let _ = upload.await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(files_in(e.state.sandbox().root()).is_empty(), "{:?}", files_in(e.state.sandbox().root()));
+        assert_eq!(e.state.reserved_uploads(), 0);
+    }
+}
+
+/// A folder the computer may write to but not read (a drop box): the temp
+/// file is removed by its path.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_upload_into_a_folder_that_cannot_be_read_leaves_no_temp_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = env();
+    let cookie = pair(&e).await;
+    let drop_box = e.state.sandbox().root().join("drop box");
+    std::fs::create_dir(&drop_box).unwrap();
+    std::fs::set_permissions(&drop_box, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let lan = e.lan.clone();
+    let c = cookie.clone();
+    let (fail, wait) = tokio::sync::oneshot::channel::<()>();
+    let first = futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"first")) });
+    let then = futures_util::stream::once(async move {
+        let _ = wait.await;
+        Err(std::io::Error::other("connection lost"))
+    });
+    let req = dev_req(Method::POST, "/api/files/upload?dir=drop%20box&name=big.bin&size=100", Some(&c), Body::from_stream(first.chain(then)), false);
+    let upload = tokio::spawn(async move { send(&lan, req).await.status });
+    for _ in 0..300 {
+        if e.state.reserved_uploads() == 95 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(e.state.reserved_uploads(), 95, "the upload is under way");
+    let _ = fail.send(());
+    assert_eq!(upload.await.unwrap(), StatusCode::BAD_REQUEST);
+    std::fs::set_permissions(&drop_box, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(files_in(&drop_box).is_empty(), "{:?}", files_in(&drop_box));
+}
+
+/// Windows does not rename a folder with a file open in it, which is why
+/// only unix needs the opened folder to find a temp file again.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_folder_with_an_upload_under_way_keeps_its_name_on_windows() {
+    let e = env();
+    let cookie = pair(&e).await;
+    let root = e.state.sandbox().root().to_path_buf();
+    std::fs::create_dir(root.join("photos")).unwrap();
+    let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let first = futures_util::stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"first")) });
+    let rest = futures_util::stream::once(async move {
+        let _ = wait.await;
+        Ok(Bytes::from_static(b"rest"))
+    });
+    let req = dev_req(Method::POST, "/api/files/upload?dir=photos&name=big.bin&size=9", Some(&cookie), Body::from_stream(first.chain(rest)), false);
+    let lan = e.lan.clone();
+    let upload = tokio::spawn(async move { send(&lan, req).await.status });
+    for _ in 0..300 {
+        if e.state.reserved_uploads() == 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let rename = dev_req(Method::POST, "/api/files/rename", Some(&cookie), Body::from(json!({ "path": "photos", "name": "album" }).to_string()), true);
+    assert_ne!(send(&e.lan, rename).await.status, StatusCode::OK);
+    let _ = go.send(());
+    assert_eq!(upload.await.unwrap(), StatusCode::OK);
+    assert_eq!(std::fs::read(root.join("photos").join("big.bin")).unwrap(), b"firstrest");
+}
+
 /// Unix: Windows does not rename a folder with a file open in it.
 #[cfg(unix)]
 #[tokio::test]
@@ -194,8 +277,9 @@ async fn download_started(e: &Env, cookie: &str) -> axum::body::BodyDataStream {
     body
 }
 
-/// What the rest of a download brings: it must fail, not end as if complete.
-async fn rest_fails(mut body: axum::body::BodyDataStream) {
+/// What the rest of a download brings: it must fail, not end as if complete,
+/// after at most `handed_over` chunks that were on their way.
+async fn rest_fails(mut body: axum::body::BodyDataStream, handed_over: usize) {
     let mut chunks = 0;
     loop {
         match tokio::time::timeout(Duration::from_secs(2), body.next()).await.expect("ends") {
@@ -204,7 +288,7 @@ async fn rest_fails(mut body: axum::body::BodyDataStream) {
             None => panic!("the download ended as if complete"),
         }
     }
-    assert!(chunks <= 1, "at most the chunk already handed over: {chunks}");
+    assert!(chunks <= handed_over, "{chunks} more chunks");
 }
 
 #[tokio::test(start_paused = true)]
@@ -216,16 +300,19 @@ async fn a_download_nobody_reads_lets_go_after_two_minutes() {
     assert!(e.state.awake.is_awake(), "not before");
     tokio::time::sleep(Duration::from_secs(2)).await;
     until_asleep(&e).await;
-    rest_fails(body).await;
+    rest_fails(body, 1).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn removing_a_phone_or_pausing_stops_a_download_nobody_reads() {
     for how in ["remove", "pause and resume"] {
         let e = env();
         let cookie = pair(&e).await;
         let id = device_id(&e, &cookie).await;
         let body = download_started(&e, &cookie).await;
+        // By now the download waits for the phone to take more.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(e.state.awake.is_awake());
         if how == "remove" {
             assert_eq!(send(&e.local, host_req(Method::DELETE, &format!("/api/host/devices/{id}"), None)).await.status, StatusCode::NO_CONTENT);
         } else {
@@ -233,7 +320,26 @@ async fn removing_a_phone_or_pausing_stops_a_download_nobody_reads() {
             e.state.set_paused(false);
         }
         until_asleep(&e).await;
-        rest_fails(body).await;
+        rest_fails(body, 0).await;
+    }
+}
+
+/// A read stuck on a disk that went away (a network share, a file still
+/// being fetched from the cloud) holds the download until one of these.
+#[tokio::test(start_paused = true)]
+async fn a_download_stuck_reading_lets_go() {
+    for how in ["the phone leaves", "two minutes pass", "the phone is removed"] {
+        let e = env();
+        let stuck = Body::from_stream(futures_util::stream::pending::<Result<Bytes, std::io::Error>>());
+        let body = crate::core::transfer::pump(stuck, crate::core::transfer::TransferStop::new(&e.state, &device_session("d")), e.state.awake.hold());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(e.state.awake.is_awake());
+        match how {
+            "the phone leaves" => drop(body),
+            "two minutes pass" => tokio::time::sleep(TRANSFER_IDLE).await,
+            _ => e.state.revoke("d"),
+        }
+        until_asleep(&e).await;
     }
 }
 
@@ -382,4 +488,25 @@ async fn only_a_few_pairing_requests_are_read_at_once() {
         let _ = r.await;
     }
     pair(&e).await;
+
+    // From many addresses, 32 at a time in all.
+    let lan = routes::lan_router(e.state.clone());
+    let from = |n: u8, body| {
+        let mut req = pair_req(body);
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([192, 168, 1, 100 + n], 5555))));
+        req
+    };
+    let mut reading = Vec::new();
+    for n in 0..32 {
+        let (body, polled) = silent_body();
+        let (lan, req) = (lan.clone(), from(n / 4, body));
+        reading.push(tokio::spawn(async move { send(&lan, req).await }));
+        polled.await.unwrap();
+    }
+    let (body, _) = silent_body();
+    assert_eq!(send(&lan, from(20, body)).await.status, StatusCode::TOO_MANY_REQUESTS);
+    for r in reading {
+        r.abort();
+        let _ = r.await;
+    }
 }

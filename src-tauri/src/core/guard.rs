@@ -337,4 +337,46 @@ mod tests {
         assert_eq!(conn.write_all(&[2; 64]).await.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert_eq!(started.elapsed(), Duration::from_secs(60));
     }
+
+    /// A stream whose flush and shutdown never finish, as when TLS waits to
+    /// send buffered records to a peer that does not read.
+    struct NeverFlushes;
+
+    impl AsyncRead for NeverFlushes {
+        fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for NeverFlushes {
+        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_flush_or_close_the_peer_never_takes_fails_too() {
+        let mut conn = TimedStream::new(NeverFlushes, Duration::from_secs(20), Duration::from_secs(60));
+        conn.write_all(b"data").await.unwrap();
+        assert_eq!(conn.flush().await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        let mut conn = TimedStream::new(NeverFlushes, Duration::from_secs(20), Duration::from_secs(60));
+        assert_eq!(conn.shutdown().await.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_closed_by_its_peer_is_not_timed_out() {
+        let (peer, stream) = tokio::io::duplex(64);
+        let mut conn = timed(stream);
+        drop(peer);
+        let mut buf = [0; 16];
+        assert_eq!(conn.read(&mut buf).await.unwrap(), 0);
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert_eq!(conn.read(&mut buf).await.unwrap(), 0, "the end, not a timeout");
+    }
 }

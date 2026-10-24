@@ -201,6 +201,43 @@ if LHN=$(scutil --get LocalHostName 2>/dev/null); then
   contains "leaf carries the Bonjour .local name" "$SAN" "DNS:$(echo "$LHN" | tr '[:upper:]' '[:lower:]').local"
 fi
 
+echo "== connection limits"
+# Reads the server's HTTP/2 SETTINGS, then times a TLS connection that never
+# sends a request (the server closes it about 20 s after the handshake).
+LIMITS=$(py - "${PHONE#https://}" "$T/ca.pem" <<'PY'
+import socket, ssl, sys, time
+host, port = sys.argv[1].rsplit(":", 1)
+ctx = ssl.create_default_context(cafile=sys.argv[2])
+ctx.set_alpn_protocols(["h2"])
+def connect():
+    return ctx.wrap_socket(socket.create_connection((host, int(port)), timeout=60), server_hostname=host)
+c = connect()
+c.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" + b"\x00\x00\x00\x04\x00\x00\x00\x00\x00")
+def exact(n):
+    b = b""
+    while len(b) < n:
+        part = c.recv(n - len(b))
+        if not part:
+            sys.exit("closed")
+        b += part
+    return b
+head = exact(9)
+body = exact(int.from_bytes(head[:3], "big"))
+settings = {int.from_bytes(body[i:i + 2], "big"): int.from_bytes(body[i + 2:i + 6], "big") for i in range(0, len(body), 6)}
+c.close()
+c = connect()
+start = time.monotonic()
+try:
+    c.recv(1)
+except OSError:
+    pass
+print(settings.get(3), round(time.monotonic() - start))
+PY
+)
+check "HTTP/2 allows 32 requests at once" "${LIMITS% *}" "32"
+WAITED=${LIMITS#* }
+if [ -n "$WAITED" ] && [ "$WAITED" -ge 15 ] && [ "$WAITED" -le 30 ]; then ok "a connection that sends nothing is closed after 20 s"; else bad "a connection that sends nothing is closed after 20 s (closed after ${WAITED}s)"; fi
+
 echo
 echo "passed: $pass  failed: $fail"
 rm -rf "$T"
