@@ -1228,4 +1228,5 @@ fn computer_name_matches_scutil() {
 }
 
 mod chat_folders;
+mod file_races;
 mod m8;

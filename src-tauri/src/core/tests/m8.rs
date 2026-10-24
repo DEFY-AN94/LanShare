@@ -12,15 +12,15 @@ use crate::core::quick;
 
 /// Records what the server asks of the desktop shell.
 #[derive(Default)]
-struct RecordingBridge {
+pub(super) struct RecordingBridge {
     notices: Mutex<Vec<MessageNotice>>,
     plain: Mutex<Vec<(String, String)>>,
     withdrawn: Mutex<Vec<Withdraw>>,
     unread: Mutex<Vec<u32>>,
     shown: Mutex<Vec<String>>,
-    clipboard: Mutex<Option<Clip>>,
+    pub(super) clipboard: Mutex<Option<Clip>>,
     copied: Mutex<Vec<String>>,
-    opened: Mutex<Vec<(&'static str, PathBuf)>>,
+    pub(super) opened: Mutex<Vec<(&'static str, PathBuf)>>,
     focused: AtomicBool,
     shortcut: Mutex<Option<String>>,
     refuse_shortcuts: AtomicBool,
@@ -93,7 +93,7 @@ fn heard(rx: &mut tokio::sync::broadcast::Receiver<crate::core::events::ServerEv
     out
 }
 
-fn recorded() -> (Env, Arc<RecordingBridge>) {
+pub(super) fn recorded() -> (Env, Arc<RecordingBridge>) {
     recorded_in(tempfile::tempdir().unwrap())
 }
 

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, broadcast};
 
 use super::auth::Session;
 use super::awake::KeepAwake;
@@ -99,6 +99,13 @@ pub struct AppState {
     network_warning: RwLock<Option<String>>,
     /// Serializes "pick a free name + rename" so two uploads never clobber each other.
     pub upload_lock: tokio::sync::Mutex<()>,
+    /// Phones change paths in the shared folder only by renaming, and a
+    /// rename can give an existing link the name of something already
+    /// checked. Each "check a path, then open or create it" holds this for
+    /// reading (`path_check`) and a rename holds it for writing
+    /// (`path_change`), so no path is swapped between its check and its use.
+    /// Transfers hold it only while they open or place a file.
+    paths: Arc<tokio::sync::RwLock<()>>,
     /// Devices removed while this process runs; their in-flight transfers stop.
     revoked: Mutex<HashSet<String>>,
     /// Watches the shared folder so changes made in Finder reach the clients.
@@ -137,6 +144,9 @@ pub struct AppState {
 
 /// A recording Settings did not end (the page went away) stops counting after this.
 const SHORTCUT_RECORDING_MAX: Duration = Duration::from_secs(120);
+
+/// How long a rename waits for paths being checked and opened.
+pub const PATH_CHANGE_WAIT: Duration = Duration::from_secs(3);
 
 /// How many deleted message ids a new event stream starts with.
 const DELETED_REPLAYED: usize = 1000;
@@ -215,6 +225,7 @@ impl AppState {
             addresses: RwLock::new(p.addresses),
             network_warning: RwLock::new(None),
             upload_lock: tokio::sync::Mutex::new(()),
+            paths: Arc::new(tokio::sync::RwLock::new(())),
             revoked: Mutex::new(HashSet::new()),
             watcher: Mutex::new(None),
             old_chat_dirs: RwLock::new(old_chat_dirs),
@@ -296,6 +307,17 @@ impl AppState {
             self.old_chat_dirs.write().unwrap().extend(chat_dirs_of(root));
         }
         Ok(())
+    }
+
+    /// Held from checking a path until it is opened or created (see `paths`).
+    pub async fn path_check(&self) -> OwnedRwLockReadGuard<()> {
+        self.paths.clone().read_owned().await
+    }
+
+    /// Held by a rename. Waits up to `PATH_CHANGE_WAIT` for checks in
+    /// progress; `None` if they did not finish by then.
+    pub async fn path_change(&self) -> Option<OwnedRwLockWriteGuard<()>> {
+        tokio::time::timeout(PATH_CHANGE_WAIT, self.paths.clone().write_owned()).await.ok()
     }
 
     /// Marks a removed device so transfers it already started are cut off.

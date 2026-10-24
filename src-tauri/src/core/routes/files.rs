@@ -10,6 +10,7 @@ use axum::response::Response;
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::core::auth::Session;
 use crate::core::error::{ApiError, ApiResult};
@@ -17,7 +18,8 @@ use crate::core::model::{DirListing, FileEntry};
 use crate::core::paths::{Sandbox, sanitize_filename, segments};
 use crate::core::state::{AppState, INBOX_DIR, SENT_DIR, Shared, is_chat_path};
 use crate::core::transfer::{
-    REJECTED_UPLOAD_DRAIN, check_fits, declared_len, discard_body, preflight, receive_upload, serve_path, unless_root_gone, upload_length,
+    REJECTED_UPLOAD_DRAIN, check_fits, checked_blocking, declared_len, discard_body, preflight, receive_upload, serve_path, unless_root_gone,
+    upload_length,
 };
 
 fn require_write(session: &Session) -> ApiResult<()> {
@@ -93,10 +95,12 @@ fn modified_ms(meta: &std::fs::Metadata) -> i64 {
 }
 
 pub fn entry_for(sandbox: &Sandbox, path: &FsPath) -> Option<FileEntry> {
-    let meta = std::fs::metadata(path).ok()?;
+    let rel = sandbox.relative(path)?;
+    // A link that leads out of the shared folder tells nothing about its target.
+    let meta = if sandbox.resolve_existing(&rel).is_ok() { std::fs::metadata(path) } else { std::fs::symlink_metadata(path) }.ok()?;
     Some(FileEntry {
         name: path.file_name()?.to_string_lossy().into_owned(),
-        path: sandbox.relative(path)?,
+        path: rel,
         is_dir: meta.is_dir(),
         size: if meta.is_dir() { 0 } else { meta.len() },
         modified: modified_ms(&meta),
@@ -140,26 +144,28 @@ pub struct PathQuery {
 
 pub async fn list(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>) -> ApiResult<Json<DirListing>> {
     require_visible(&session, &q.path)?;
+    let check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&q.path)?;
     require_visible_at(&session, &state, &dir)?;
     let rel = sandbox.relative(&dir).unwrap_or_default();
     let (sb, st) = (sandbox.clone(), state.clone());
     let hide_chat = !session.is_host();
-    let entries = tokio::task::spawn_blocking(move || {
+    let entries = checked_blocking(check, move || {
         let mut entries = list_dir(&sb, &dir)?;
         if hide_chat {
             entries.retain(|e| !leads_into_chat_folder(&st, &sb, e));
         }
         std::io::Result::Ok(entries)
     })
-    .await
-    .map_err(ApiError::internal)??;
+    .await??;
     Ok(Json(DirListing { path: rel, entries, can_write: session.can_write() }))
 }
 
 pub async fn download(State(state): State<Shared>, Extension(session): Extension<Session>, Query(q): Query<PathQuery>, req: Request) -> ApiResult<Response> {
     require_visible(&session, &q.path)?;
+    // Until serve_path has opened the file; the body streams from that handle.
+    let _check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let path = sandbox.resolve_file(&q.path)?;
     require_visible_at(&session, &state, &path)?;
@@ -198,6 +204,7 @@ pub async fn upload(
 async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, declared: Option<u64>, body: &mut Option<Body>) -> ApiResult<FileEntry> {
     require_write(session)?;
     require_visible(session, &q.dir)?;
+    let check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&q.dir)?;
     require_visible_at(session, state, &dir)?;
@@ -214,7 +221,7 @@ async fn store_upload(state: &Shared, session: &Session, q: &UploadQuery, declar
     let length = upload_length(declared, q.size)?;
     let mut reservation = preflight(state, &dir, length)?;
     let body = body.take().ok_or_else(|| ApiError::internal("upload body already used"))?;
-    let (path, _) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut()).await?;
+    let (path, _) = receive_upload(state, session, body, &dir, &name, length, reservation.as_mut(), check).await?;
     if let Some(id) = upload_id {
         state.remember_upload(who, id, path.clone());
     }
@@ -263,6 +270,7 @@ pub struct MkdirBody {
 pub async fn mkdir(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<MkdirBody>) -> ApiResult<Json<FileEntry>> {
     require_write(&session)?;
     require_visible(&session, &b.dir)?;
+    let _check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     let dir = sandbox.resolve_dir(&b.dir)?;
     require_visible_at(&session, &state, &dir)?;
@@ -286,6 +294,8 @@ pub struct RenameBody {
 pub async fn rename(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<RenameBody>) -> ApiResult<Json<FileEntry>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
+    // Waits for paths being checked and opened elsewhere (see AppState::path_check).
+    let _change = state.path_change().await.ok_or_else(|| ApiError::conflict("有文件正在打开或保存，请稍后再试"))?;
     let sandbox = state.usable_sandbox()?;
     // resolve_entry: renaming a symlink renames the link, not its target.
     let src = sandbox.resolve_entry(&b.path)?;
@@ -343,17 +353,17 @@ pub fn move_to_trash(path: &FsPath) -> Result<(), trash::Error> {
 }
 
 /// Moves `target` to the Trash / Recycle Bin; refused where Windows keeps no
-/// Recycle Bin, so nothing is ever deleted for good.
-pub(super) async fn trash(target: std::path::PathBuf) -> ApiResult<()> {
+/// Recycle Bin, so nothing is ever deleted for good. `check` was held since
+/// `target` was checked (see `checked_blocking`).
+pub(super) async fn trash(target: std::path::PathBuf, check: OwnedRwLockReadGuard<()>) -> ApiResult<()> {
     #[cfg(windows)]
     if !has_recycle_bin(&target) {
         return Err(ApiError::conflict("这个位置（U 盘或网络共享）没有回收站，为避免永久删除，请在电脑上处理这个文件"));
     }
     // A fresh thread each time: on Windows the trash crate sets up COM per
     // thread and aborts if a pooled thread was already initialised differently.
-    tokio::task::spawn_blocking(move || std::thread::spawn(move || move_to_trash(&target)).join())
-        .await
-        .map_err(ApiError::internal)?
+    checked_blocking(check, move || std::thread::spawn(move || move_to_trash(&target)).join())
+        .await?
         .map_err(|_| ApiError::internal("trash thread panicked"))?
         .map_err(|e| ApiError::internal(format!("move to trash failed ({})", trash_failure(&e))))
 }
@@ -370,6 +380,7 @@ fn trash_failure(e: &trash::Error) -> String {
 pub async fn delete(State(state): State<Shared>, Extension(session): Extension<Session>, Json(b): Json<DeleteBody>) -> ApiResult<Json<Value>> {
     require_write(&session)?;
     require_visible(&session, &b.path)?;
+    let check = state.path_check().await;
     let sandbox = state.usable_sandbox()?;
     // Deleting a symlink removes the link only (trash keeps the last component).
     let target = sandbox.resolve_entry(&b.path).map_err(|e| match e {
@@ -382,7 +393,7 @@ pub async fn delete(State(state): State<Shared>, Extension(session): Extension<S
     }
     require_no_chat_folder_inside(&session, &state, &target)?;
     let parent_rel = target.parent().and_then(|p| sandbox.relative(p)).unwrap_or_default();
-    trash(target).await?;
+    trash(target, check).await?;
     state.emit_files_changed(&parent_rel);
     Ok(Json(json!({ "ok": true })))
 }

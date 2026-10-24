@@ -257,6 +257,33 @@ fn friendly(p: &Path) -> PathBuf {
     dunce::simplified(p).to_path_buf()
 }
 
+/// Whether the open `file` is the file at `path` now: a path checked after
+/// opening is the one that was opened, not something a rename put there.
+pub fn opened_file_is(file: &std::fs::File, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((file.metadata(), std::fs::metadata(path)), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+        let mut buf = vec![0u16; 32768];
+        // SAFETY: a valid open handle and a buffer of the given length. Flags 0
+        // give the same `\\?\` form std::fs::canonicalize returns.
+        let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
+        let opened = std::ffi::OsString::from_wide(&buf[..buf.len().min(n)]);
+        n > 0 && n < buf.len() && std::fs::canonicalize(path).is_ok_and(|p| p.as_os_str() == opened.as_os_str())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, path);
+        false
+    }
+}
+
 /// A path the Windows shell accepts (it rejects `\\?\` forms): verbatim
 /// UNC becomes `\\host\share`, verbatim disk paths lose the prefix.
 pub fn shell_path(p: &Path) -> PathBuf {
@@ -555,4 +582,17 @@ mod tests {
         std::fs::write(dir.join("a (1).txt"), "").unwrap();
         assert_eq!(unique_path(&dir, "a.txt"), dir.join("a (2).txt"));
     }
+
+    #[test]
+    fn an_open_file_is_told_from_one_put_in_its_place() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("cat.png");
+        std::fs::write(&path, b"cat").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        assert!(opened_file_is(&file, &path));
+        std::fs::rename(&path, d.path().join("away.png")).unwrap();
+        std::fs::write(&path, b"another").unwrap();
+        assert!(!opened_file_is(&file, &path), "the same name, another file");
+    }
+
 }
