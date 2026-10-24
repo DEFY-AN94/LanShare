@@ -253,7 +253,6 @@ pub async fn delete_device(State(state): State<Shared>, Path(id): Path<String>) 
     }
     state.revoke(&id);
     state.device_removed(&id);
-    state.emit(Audience::Device(id), "revoked", &json!({}));
     state.emit(Audience::Host, "devices", &json!({}));
     Ok(StatusCode::NO_CONTENT)
 }

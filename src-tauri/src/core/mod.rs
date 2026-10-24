@@ -213,8 +213,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
 
     let lan_app = routes::lan_router(state.clone());
     // Non-LAN peers and connection floods are cut off before the TLS handshake.
-    let acceptor =
-        guard::LogHandshakeFailures(RustlsAcceptor::new(state.tls.rustls_config()).acceptor(guard::LanAcceptor::default()));
+    let acceptor = guard::Handshake(RustlsAcceptor::new(state.tls.rustls_config()).acceptor(guard::LanAcceptor::default()));
     let mut server = axum_server::from_tcp(lan_listener)?.acceptor(acceptor);
     server.http_builder().http1().timer(TokioTimer::new()).header_read_timeout(Duration::from_secs(20));
     server
@@ -222,7 +221,9 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
         .http2()
         .timer(TokioTimer::new())
         .keep_alive_interval(Duration::from_secs(30))
-        .keep_alive_timeout(Duration::from_secs(20));
+        .keep_alive_timeout(Duration::from_secs(20))
+        // hyper allows 200 requests at once on each connection.
+        .max_concurrent_streams(32);
     tokio::spawn(async move {
         if let Err(e) = server.serve(lan_app.into_make_service_with_connect_info::<SocketAddr>()).await {
             tracing::error!("LAN server stopped: {e}");

@@ -70,7 +70,7 @@ fn api(state: &Shared) -> Router<Shared> {
         .route_layer(from_fn_with_state(state.clone(), require_session));
 
     Router::new()
-        .route("/api/pair/request", post(pair::request))
+        .route("/api/pair/request", post(pair::request).layer(from_fn_with_state(pair::PairLimits::default(), pair::limit_request)))
         .route("/api/pair/status/{id}", get(pair::status))
         .route("/api/ca", get(pair::ca_info))
         .route("/api/ca.crt", get(pair::ca_cert))

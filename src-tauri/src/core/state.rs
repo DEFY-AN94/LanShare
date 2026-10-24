@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::json;
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, broadcast};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, broadcast, watch};
 
 use super::auth::Session;
 use super::awake::KeepAwake;
@@ -108,6 +108,10 @@ pub struct AppState {
     paths: Arc<tokio::sync::RwLock<()>>,
     /// Devices removed while this process runs; their in-flight transfers stop.
     revoked: Mutex<HashSet<String>>,
+    /// Wakes transfers when a device is removed or sharing is paused, so
+    /// they stop also while no data moves. Each pause counts up: a transfer
+    /// that started before it stays stopped once sharing resumes.
+    transfer_changes: watch::Sender<u64>,
     /// Watches the shared folder so changes made in Finder reach the clients.
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Chat folders of every shared folder chat files were saved in
@@ -227,6 +231,7 @@ impl AppState {
             upload_lock: tokio::sync::Mutex::new(()),
             paths: Arc::new(tokio::sync::RwLock::new(())),
             revoked: Mutex::new(HashSet::new()),
+            transfer_changes: watch::Sender::new(0),
             watcher: Mutex::new(None),
             old_chat_dirs: RwLock::new(old_chat_dirs),
             pruned_before: AtomicI64::new(pruned_before),
@@ -320,16 +325,33 @@ impl AppState {
         tokio::time::timeout(PATH_CHANGE_WAIT, self.paths.clone().write_owned()).await.ok()
     }
 
-    /// Marks a removed device so transfers it already started are cut off.
+    /// Marks a removed device so transfers and event streams it already
+    /// started are cut off, and tells its pages that it was removed.
     pub fn revoke(&self, device_id: &str) {
         self.revoked.lock().unwrap().insert(device_id.to_string());
+        self.transfer_changes.send_modify(|_| {});
+        self.emit(Audience::Device(device_id.to_string()), "revoked", &json!({}));
     }
 
-    /// Checked for every chunk of a running upload or download.
-    pub fn transfer_allowed(&self, session: &Session) -> bool {
+    pub fn is_revoked(&self, device_id: &str) -> bool {
+        self.revoked.lock().unwrap().contains(device_id)
+    }
+
+    /// How many times sharing was paused (see `transfer_changes`).
+    pub fn pauses(&self) -> u64 {
+        *self.transfer_changes.borrow()
+    }
+
+    /// Changes whenever a transfer may have to stop.
+    pub fn transfer_changes(&self) -> watch::Receiver<u64> {
+        self.transfer_changes.subscribe()
+    }
+
+    /// Whether a transfer that started after `pauses` pauses may go on.
+    pub fn transfer_allowed(&self, session: &Session, pauses: u64) -> bool {
         match session {
             Session::Host => true,
-            Session::Device { id, .. } => !self.is_paused() && !self.revoked.lock().unwrap().contains(id),
+            Session::Device { id, .. } => !self.is_paused() && self.pauses() == pauses && !self.is_revoked(id),
         }
     }
 
@@ -468,6 +490,9 @@ impl AppState {
 
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::SeqCst);
+        if paused {
+            self.transfer_changes.send_modify(|n| *n += 1);
+        }
         {
             let mut cfg = self.config.lock().unwrap();
             if cfg.paused != paused {

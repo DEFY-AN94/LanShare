@@ -138,20 +138,27 @@ pub async fn store_upload(state: &Shared, session: &Session, q: &UploadRequest, 
     let final_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
     let mime = mime_guess::from_path(&final_name).first_or_octet_stream().to_string();
     let root = sandbox.root().to_string_lossy().into_owned();
-    let (row, is_new) = state.db.insert_message(&NewMessage {
-        device_id: &device_id,
-        from_host: session.is_host(),
-        client_id,
-        kind: "file",
-        text: None,
-        file_path: Some(&rel),
-        file_name: Some(&final_name),
-        file_size: Some(size as i64),
-        mime: Some(&mime),
-        created_at: now_ms(),
-        file_root: Some(&root),
-        file_created: created,
-    })?;
+    let (row, is_new) = state
+        .db
+        .insert_message(&NewMessage {
+            device_id: &device_id,
+            from_host: session.is_host(),
+            client_id,
+            kind: "file",
+            text: None,
+            file_path: Some(&rel),
+            file_name: Some(&final_name),
+            file_size: Some(size as i64),
+            mime: Some(&mime),
+            created_at: now_ms(),
+            file_root: Some(&root),
+            file_created: created,
+        })
+        // A file that lands as its phone is removed has no conversation to
+        // go in: without its message nobody could reach it.
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&path);
+        })?;
     let out = state.message_out(row);
     state.emit_files_changed(rel.rsplit_once('/').map(|(d, _)| d).unwrap_or(""));
     after_insert(state, session, &device_name, &out, is_new);
