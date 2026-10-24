@@ -1,9 +1,11 @@
 //! Streaming file transfer: downloads with Range support, uploads straight to disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::Request;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -17,6 +19,7 @@ use tower::ServiceExt as _;
 use tower_http::services::ServeFile;
 
 use super::auth::Session;
+use super::awake::AwakeGuard;
 use super::disk::{self, FAT_MAX_FILE, human_size};
 use super::error::{ApiError, ApiResult};
 use super::paths::unique_path;
@@ -79,6 +82,45 @@ fn clone_head(parts: &Parts, strip_range: bool) -> Request {
     r
 }
 
+/// How long an upload or download may go without moving any data. Longer
+/// than a phone waits before it gives up on a stalled upload itself
+/// (STALL_MS in src/lib/api.ts).
+pub const TRANSFER_IDLE: Duration = Duration::from_secs(120);
+
+/// Whether a transfer may go on. Removing the phone or pausing sharing stops
+/// it at once, also while no data moves; a pause stops it for good, even if
+/// sharing resumes before its next chunk. The computer's own never stop.
+#[derive(Clone)]
+pub struct TransferStop {
+    state: Shared,
+    session: Session,
+    pauses: u64,
+}
+
+impl TransferStop {
+    pub fn new(state: &Shared, session: &Session) -> Self {
+        TransferStop { state: state.clone(), session: session.clone(), pauses: state.pauses() }
+    }
+
+    pub fn allowed(&self) -> bool {
+        self.state.transfer_allowed(&self.session, self.pauses)
+    }
+
+    /// Resolves once the transfer may not go on.
+    pub async fn stopped(&self) {
+        let mut changes = self.state.transfer_changes();
+        while self.allowed() {
+            if changes.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+}
+
+fn transfer_stopped() -> ApiError {
+    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "传输已被电脑端停止")
+}
+
 /// Serves `path` (already sandbox-checked) with Range/ETag support. The body
 /// stops mid-way if sharing is paused or the device is removed.
 pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_name: &str, want_inline: bool, parts: &Parts) -> Response {
@@ -108,20 +150,10 @@ pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_nam
         }
         _ => res,
     };
-    let (st, sess) = (state.clone(), session.clone());
-    // Lives as long as the body: the computer stays awake until the download ends.
+    let stop = TransferStop::new(state, session);
+    // The computer stays awake until the download ends.
     let awake = state.awake.hold();
-    let mut res: Response = res.map(move |body| {
-        let guarded = Body::new(body).into_data_stream().map(move |chunk| {
-            let _ = &awake;
-            if st.transfer_allowed(&sess) {
-                chunk.map_err(std::io::Error::other)
-            } else {
-                Err(std::io::Error::other("transfer cancelled"))
-            }
-        });
-        Body::from_stream(guarded)
-    });
+    let mut res: Response = res.map(move |body| pump(Body::new(body), stop, awake));
     let ok = matches!(res.status(), StatusCode::OK | StatusCode::PARTIAL_CONTENT);
     let h = res.headers_mut();
     if ok {
@@ -136,6 +168,63 @@ pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_nam
     // No copy stays in a browser cache after unpairing or clearing the chat.
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
+}
+
+/// Sends a download's body from a task of its own, which lets go of the file
+/// and of `awake` once the transfer is stopped, the response is gone, or
+/// nothing moved for `TRANSFER_IDLE` (a phone that takes nothing, a read
+/// stuck on a disk that went away): a body nobody reads is never polled, so
+/// it could not notice any of these by itself.
+pub(super) fn pump(body: Body, stop: TransferStop, awake: AwakeGuard) -> Body {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let finished = Arc::new(AtomicBool::new(false));
+    let done = finished.clone();
+    let check = stop.clone();
+    tokio::spawn(async move {
+        let _awake = awake;
+        let mut data = body.into_data_stream();
+        let idle = tokio::time::sleep(TRANSFER_IDLE);
+        tokio::pin!(idle);
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = stop.stopped() => return,
+                _ = tx.closed() => return,
+                _ = &mut idle => return,
+                chunk = data.next() => chunk,
+            };
+            let chunk = match chunk {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(_)) => return,
+                None => {
+                    done.store(true, Ordering::SeqCst);
+                    return;
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = stop.stopped() => return,
+                _ = &mut idle => return,
+                sent = tx.send(chunk) => if sent.is_err() { return },
+            }
+            idle.as_mut().reset(tokio::time::Instant::now() + TRANSFER_IDLE);
+        }
+    });
+    // Ending early must fail the response, not end it as if complete.
+    let chunks = futures_util::stream::unfold(Some(rx), move |rx| {
+        let (finished, check) = (finished.clone(), check.clone());
+        async move {
+            let mut rx = rx?;
+            let failed = || Some((Err(std::io::Error::other("transfer stopped")), None));
+            match rx.recv().await {
+                Some(_) if !check.allowed() => failed(),
+                Some(chunk) => Some((Ok(chunk), Some(rx))),
+                None if finished.load(Ordering::SeqCst) => None,
+                None => failed(),
+            }
+        }
+    });
+    Body::from_stream(chunks)
 }
 
 fn is_part_file(name: &str) -> bool {
@@ -173,13 +262,26 @@ pub fn sweep_tree(root: &Path, depth: usize) {
 struct TempFile {
     path: PathBuf,
     keep: bool,
+    /// The folder it is in, opened: the file is deleted from there also
+    /// after the folder was renamed. (Windows does not rename a folder with
+    /// a file open in it.) `None` if the folder cannot be read, only written.
+    #[cfg(unix)]
+    dir: Option<std::fs::File>,
 }
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        if !self.keep {
-            let _ = std::fs::remove_file(&self.path);
+        if self.keep {
+            return;
         }
+        #[cfg(unix)]
+        if let (Some(dir), Some(name)) = (&self.dir, self.path.file_name().and_then(|n| std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(n)).ok())) {
+            use std::os::fd::AsRawFd;
+            // SAFETY: an open folder and a NUL-terminated name in it.
+            unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) };
+            return;
+        }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -360,23 +462,41 @@ pub async fn receive_upload(
     mut reservation: Option<&mut Reservation>,
     check: OwnedRwLockReadGuard<()>,
 ) -> ApiResult<(PathBuf, u64)> {
+    let stop = TransferStop::new(state, session);
     let _awake = state.awake.hold();
-    let tmp_path = dir.join(format!(".lanshare-{}.part", random_hex(8)));
-    let (d, t) = (dir.to_path_buf(), tmp_path.clone());
-    let (file, folder) = checked_blocking(check, move || -> std::io::Result<_> {
+    let (d, t) = (dir.to_path_buf(), dir.join(format!(".lanshare-{}.part", random_hex(8))));
+    // The temp file is owned from its creation on, also if the request goes away meanwhile.
+    let (file, folder, mut tmp) = checked_blocking(check, move || -> std::io::Result<_> {
         sweep_stale_parts(&d, Duration::from_secs(24 * 3600));
         let folder = folder_id(&d)?;
-        Ok((std::fs::File::create(&t)?, folder))
+        #[cfg(unix)]
+        let opened = std::fs::File::open(&d).ok();
+        let file = std::fs::File::create(&t)?;
+        Ok((
+            file,
+            folder,
+            TempFile {
+                path: t,
+                keep: false,
+                #[cfg(unix)]
+                dir: opened,
+            },
+        ))
     })
     .await??;
-    let mut tmp = TempFile { path: tmp_path, keep: false };
     let mut out = BufWriter::with_capacity(1 << 20, tokio::fs::File::from_std(file));
     let mut stream = body.into_data_stream();
     let mut total: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        if !state.transfer_allowed(session) {
-            return Err(ApiError::new(axum::http::StatusCode::SERVICE_UNAVAILABLE, "传输已被电脑端停止"));
-        }
+    let idle = tokio::time::sleep(TRANSFER_IDLE);
+    tokio::pin!(idle);
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            _ = stop.stopped() => return Err(transfer_stopped()),
+            _ = &mut idle => return Err(ApiError::new(StatusCode::REQUEST_TIMEOUT, "上传长时间没有收到数据，已取消，请重新上传")),
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else { break };
         let chunk = chunk.map_err(|_| ApiError::bad_request("上传中断"))?;
         total += chunk.len() as u64;
         if total > length {
@@ -386,6 +506,9 @@ pub async fn receive_upload(
             r.landed(chunk.len() as u64);
         }
         out.write_all(&chunk).await?;
+        if !chunk.is_empty() {
+            idle.as_mut().reset(tokio::time::Instant::now() + TRANSFER_IDLE);
+        }
     }
     if total != length {
         return Err(ApiError::bad_request("上传不完整，请重试"));
@@ -402,6 +525,9 @@ pub async fn receive_upload(
             return Err(ApiError::conflict("上传的目标文件夹刚被改动，请重新上传"));
         }
         let _guard = st.upload_lock.blocking_lock();
+        if !stop.allowed() {
+            return Err(transfer_stopped());
+        }
         let target = unique_path(&d, &n);
         #[cfg(windows)]
         let created = std::fs::metadata(&t).and_then(|m| m.created()).ok();

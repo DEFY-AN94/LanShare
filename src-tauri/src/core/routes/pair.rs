@@ -1,9 +1,14 @@
 //! Public pairing endpoints used by a phone that is not paired yet.
 
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Path, State};
+use axum::body::{Body, to_bytes};
+use axum::extract::{ConnectInfo, Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -15,6 +20,73 @@ use crate::core::events::Audience;
 use crate::core::pairing::Poll;
 use crate::core::state::Shared;
 use crate::core::util::now_ms;
+
+/// A pairing request is a code or token and a device name.
+const PAIR_BODY_MAX: usize = 4 * 1024;
+const PAIR_BODY_WAIT: Duration = Duration::from_secs(10);
+const PAIR_READS_PER_IP: usize = 4;
+const PAIR_READS_TOTAL: usize = 32;
+
+/// Pairing requests are the only bodies read from devices that are not
+/// paired: each is held to `PAIR_BODY_MAX` and `PAIR_BODY_WAIT`, and only a
+/// few are read at a time, before the handler and its rate limit see them.
+#[derive(Clone, Default)]
+pub struct PairLimits {
+    reading: Arc<Mutex<Reading>>,
+}
+
+#[derive(Default)]
+struct Reading {
+    total: usize,
+    per_ip: HashMap<IpAddr, usize>,
+}
+
+/// One request being read; frees its place when dropped.
+struct ReadPermit {
+    reading: Arc<Mutex<Reading>>,
+    ip: IpAddr,
+}
+
+impl Drop for ReadPermit {
+    fn drop(&mut self) {
+        let mut r = self.reading.lock().unwrap_or_else(|p| p.into_inner());
+        r.total -= 1;
+        if let Some(n) = r.per_ip.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                r.per_ip.remove(&self.ip);
+            }
+        }
+    }
+}
+
+impl PairLimits {
+    fn admit(&self, ip: IpAddr) -> Option<ReadPermit> {
+        let ip = ip.to_canonical();
+        let mut r = self.reading.lock().unwrap_or_else(|p| p.into_inner());
+        let n = r.per_ip.get(&ip).copied().unwrap_or(0);
+        if r.total >= PAIR_READS_TOTAL || n >= PAIR_READS_PER_IP {
+            return None;
+        }
+        r.total += 1;
+        r.per_ip.insert(ip, n + 1);
+        Some(ReadPermit { reading: self.reading.clone(), ip })
+    }
+}
+
+/// Middleware for `POST /api/pair/request`.
+pub async fn limit_request(State(limits): State<PairLimits>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
+    let Some(_permit) = limits.admit(peer.ip()) else {
+        return ApiError::new(StatusCode::TOO_MANY_REQUESTS, "连接请求太多，请稍后再试").into_response();
+    };
+    let (parts, body) = req.into_parts();
+    let bytes = match tokio::time::timeout(PAIR_BODY_WAIT, to_bytes(body, PAIR_BODY_MAX)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "连接请求无效，请重新扫码").into_response(),
+        Err(_) => return ApiError::new(StatusCode::REQUEST_TIMEOUT, "连接请求超时，请重试").into_response(),
+    };
+    next.run(Request::from_parts(parts, Body::from(bytes))).await
+}
 
 #[derive(Deserialize)]
 pub struct PairBody {
