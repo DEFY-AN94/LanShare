@@ -47,11 +47,14 @@ S=$(curl "${H[@]}" "${X[@]}" -X POST "$LOCAL/api/host/pairing")
 TOKEN=$(echo "$S" | py -c 'import sys,json,urllib.parse as u;d=json.load(sys.stdin);print(u.parse_qs(u.urlparse(d["urls"][0]["url"]).query)["t"][0])')
 contains "pairing session has QR svg" "$S" '<svg'
 check "phone unpaired /api/me is 401" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' "$PHONE/api/me")" 401
-check "pair request without CSRF header rejected" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"name\":\"curl\"}" "$PHONE/api/pair/request")" 403
+# JSON bodies go in variables: bash 3.2 (macOS) brace-expands them inside "$(...)".
+BODY="{\"token\":\"$TOKEN\",\"name\":\"curl\"}"
+check "pair request without CSRF header rejected" "$(curl "${D[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$PHONE/api/pair/request")" 403
 R=$(curl "${D[@]}" "${X[@]}" -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"name\":\"curl-phone\"}" "$PHONE/api/pair/request")
 RID=$(echo "$R" | py -c 'import sys,json;print(json.load(sys.stdin)["request_id"])')
 contains "pair request returns confirm code" "$R" confirm_code
-check "token is single-use" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\",\"name\":\"x\"}" "$PHONE/api/pair/request")" 403
+BODY="{\"token\":\"$TOKEN\",\"name\":\"x\"}"
+check "token is single-use" "$(curl "${D[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$PHONE/api/pair/request")" 403
 check "status pending" "$(curl "${D[@]}" "$PHONE/api/pair/status/$RID" | py -c 'import sys,json;print(json.load(sys.stdin)["status"])')" pending
 contains "host sees pending request" "$(curl "${H[@]}" "$LOCAL/api/host/pairing/requests")" curl-phone
 check "approve" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -X POST "$LOCAL/api/host/pairing/requests/$RID/approve")" 200
@@ -179,7 +182,11 @@ echo "== 6-digit code path"
 S2=$(curl "${H[@]}" "${X[@]}" -X POST "$LOCAL/api/host/pairing")
 CODE=$(echo "$S2" | py -c 'import sys,json;print(json.load(sys.stdin)["code"])')
 check "wrong code rejected" "$(curl "${TLS[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"code":"000000","name":"x"}' "$PHONE/api/pair/request")" 403
-check "right code accepted" "$(curl "${TLS[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"code\":\"$CODE\",\"name\":\"code-phone\"}" "$PHONE/api/pair/request")" 200
+BODY="{\"code\":\"$CODE\",\"name\":\"code-phone\"}"
+CR=$(curl "${TLS[@]}" "${X[@]}" -H 'Content-Type: application/json' -d "$BODY" "$PHONE/api/pair/request")
+contains "right code accepted" "$CR" request_id
+# Approved in the certificate reset section: a phone may make 5 pairing attempts a minute.
+RID_CODE=$(echo "$CR" | py -c 'import sys,json;print(json.load(sys.stdin)["request_id"])')
 
 echo "== TLS"
 CERT=$(echo | openssl s_client -connect "${PHONE#https://}" -alpn h2 -CAfile "$T/ca.pem" 2>/dev/null)
@@ -244,13 +251,10 @@ contains "certificate step points at the install page" "$CS" '/pair?cert'
 check "certificate step carries no pairing token" "$(echo "$CS" | py -c 'import sys,json,urllib.parse as u;print(sum("t" in u.parse_qs(u.urlparse(x["url"]).query) for x in json.load(sys.stdin)["urls"]))')" 0
 eku() { openssl x509 -in "$1" -noout -text 2>/dev/null | grep -A1 'Extended Key Usage'; }
 contains "root limited to server authentication" "$(eku "$T/ca.pem")" 'TLS Web Server Authentication'
-# A phone paired now has to pair again after a reset.
+# A phone paired now (the 6-digit request above) has to pair again after a reset.
 RJ=(-c "$T/reset.jar" -b "$T/reset.jar")
-S3=$(curl "${H[@]}" "${X[@]}" -X POST "$LOCAL/api/host/pairing")
-TOKEN3=$(echo "$S3" | py -c 'import sys,json,urllib.parse as u;d=json.load(sys.stdin);print(u.parse_qs(u.urlparse(d["urls"][0]["url"]).query)["t"][0])')
-RID3=$(curl "${TLS[@]}" "${RJ[@]}" "${X[@]}" -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN3\",\"name\":\"reset-phone\"}" "$PHONE/api/pair/request" | py -c 'import sys,json;print(json.load(sys.stdin)["request_id"])')
-curl "${H[@]}" "${X[@]}" -o /dev/null -X POST "$LOCAL/api/host/pairing/requests/$RID3/approve"
-curl "${TLS[@]}" "${RJ[@]}" -o /dev/null "$PHONE/api/pair/status/$RID3"
+curl "${H[@]}" "${X[@]}" -o /dev/null -X POST "$LOCAL/api/host/pairing/requests/$RID_CODE/approve"
+curl "${TLS[@]}" "${RJ[@]}" -o /dev/null "$PHONE/api/pair/status/$RID_CODE"
 check "paired before the reset" "$(curl "${TLS[@]}" "${RJ[@]}" -o /dev/null -w '%{http_code}' "$PHONE/api/me")" 200
 check "reset" "$(curl "${H[@]}" "${X[@]}" -o /dev/null -w '%{http_code}' -X POST "$LOCAL/api/host/reset-cert")" 204
 curl "${H[@]}" -o "$T/ca2.pem" "$LOCAL/api/ca.crt"

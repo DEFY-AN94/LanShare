@@ -171,6 +171,16 @@ fn has_chat_dirs(root: &Path) -> bool {
 
 pub type Shared = Arc<AppState>;
 
+/// Devices paired before devices remembered their root certificate (before
+/// v0.3.1) count as paired under the current one, unless this start had to
+/// make a new one: then they must pair again too. Before `AppState::new`.
+pub fn adopt_devices(db: &Db, tls: &Tls) -> anyhow::Result<()> {
+    if !tls.made_new_ca() {
+        db.adopt_ca(&tls.ca_fingerprint())?;
+    }
+    Ok(())
+}
+
 pub struct StateParts {
     pub db: Db,
     pub data_dir: PathBuf,
@@ -200,10 +210,6 @@ impl AppState {
             && let Err(e) = p.db.remember_chat_root(&p.sandbox.root().to_string_lossy())
         {
             tracing::warn!("could not record the shared folder's chat folders: {e}");
-        }
-        // Devices paired before they remembered their root certificate.
-        if let Err(e) = p.db.adopt_ca(&p.tls.ca_fingerprint()) {
-            tracing::warn!("could not record the devices' root certificate: {e}");
         }
         // Paths only: an earlier shared folder may be on a disk or share that is gone.
         let mut old_chat_dirs: Vec<PathBuf> = p.db.chat_roots().unwrap_or_default().iter().flat_map(|r| chat_dirs_of(Path::new(r))).collect();

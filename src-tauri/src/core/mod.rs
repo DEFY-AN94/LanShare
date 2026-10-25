@@ -182,6 +182,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     let addresses = net::lan_addresses();
     let ips: Vec<IpAddr> = addresses.iter().filter_map(|a| a.ip.parse().ok()).collect();
     let tls = Tls::init(&opts.data_dir.join("tls"), &host_name, net::local_dns_name(), &ips).context("prepare certificates")?;
+    state::adopt_devices(&db, &tls).context("record the devices' root certificate")?;
 
     let lan_listener = bind_lan(config.port).context("bind LAN port")?;
     let lan_port = lan_listener.local_addr()?.port();

@@ -46,18 +46,23 @@ export function AddDeviceModal({ onClose }: { onClose: () => void }) {
   };
 
   useEffect(() => {
-    api.get<CertSetup>("/api/host/cert-setup").then(setSetup, (e: Error) => setError(e.message));
+    // Again when sharing is paused or resumed, or the addresses change.
+    const loadSetup = () => api.get<CertSetup>("/api/host/cert-setup").then(setSetup, (e: Error) => setError(e.message));
+    void loadSetup();
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
-    const off = events.on("pairing_done", (data) => {
-      const d = data as { status?: string; name?: string };
-      if (d?.status === "approved") {
-        toast(`已连接「${d.name ?? "新设备"}」`, "success");
-        onClose();
-      }
-    });
+    const offs = [
+      events.on("pairing_done", (data) => {
+        const d = data as { status?: string; name?: string };
+        if (d?.status === "approved") {
+          toast(`已连接「${d.name ?? "新设备"}」`, "success");
+          onClose();
+        }
+      }),
+      ...["paused", "network", "resync"].map((name) => events.on(name, () => void loadSetup())),
+    ];
     return () => {
       window.clearInterval(tick);
-      off();
+      offs.forEach((off) => off());
       // Closing the panel invalidates the QR code right away.
       void api.del("/api/host/pairing").catch(() => {});
     };
@@ -140,7 +145,7 @@ function CertStep(props: { setup: CertSetup; current: PairingUrl; onIp: (ip: str
         <ol className="steps">
           <li>iPhone 和这台电脑连同一个 Wi-Fi，用相机扫描二维码，在 Safari 中打开</li>
           <li>
-            还没装证书时，Safari 会先提示「此连接非私人连接」。这个页面只用来下载证书，不含任何密钥，可以在这一页继续访问；真正防冒充的是下一步核对指纹
+            还没配对过的 iPhone 打开时，Safari 会先提示「此连接非私人连接」。这个页面只提供证书，这时可以在这一页继续访问；真正防冒充的是下一步核对指纹。已经配对过的 iPhone 请改在手机上 LanShare 右上角菜单里点「安装电脑的证书」
           </li>
           <li>按手机页面的步骤下载证书。安装前，核对证书详情里的 SHA-256 和下面完全一致，不一致就不要安装</li>
           <li>

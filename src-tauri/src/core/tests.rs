@@ -56,8 +56,10 @@ fn env_bridged(dir: tempfile::TempDir, preferred_root: Option<std::path::PathBuf
     config.shared_root = sandbox.root().to_path_buf();
     config.port = 53210;
     std::fs::create_dir_all(&data_dir).unwrap();
+    let db = Db::open(&data_dir.join("lanshare.db")).unwrap();
+    super::state::adopt_devices(&db, &tls).unwrap();
     let state = AppState::new(StateParts {
-        db: Db::open(&data_dir.join("lanshare.db")).unwrap(),
+        db,
         data_dir,
         home_dir: dir.path().to_path_buf(),
         config,

@@ -381,14 +381,20 @@ pub async fn reset_cert(State(state): State<Shared>) -> ApiResult<StatusCode> {
     let host = state.host_name.clone();
     let st = state.clone();
     // Pairing under way belonged to the old certificate; the lock keeps an
-    // approval (`approve`) from landing in between.
-    let dropped = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
+    // approval (`approve`) from landing in between. A reset that failed after
+    // writing the new root (`Tls::reset`) has replaced it all the same.
+    let (reset, dropped) = tokio::task::spawn_blocking(move || {
         let mut pairing = st.pairing.lock().unwrap();
-        st.tls.reset(&host, &ips)?;
-        Ok(pairing.clear())
+        let before = st.tls.ca_fingerprint();
+        let reset = st.tls.reset(&host, &ips);
+        let dropped = if st.tls.ca_fingerprint() != before { Some(pairing.clear()) } else { None };
+        (reset, dropped)
     })
     .await
-    .map_err(ApiError::internal)??;
+    .map_err(ApiError::internal)?;
+    let Some(dropped) = dropped else {
+        return Err(ApiError::internal(reset.err().unwrap_or_else(|| anyhow::anyhow!("the certificate did not change"))));
+    };
     for id in dropped {
         state.emit(Audience::Host, "pairing_done", &json!({ "id": id, "status": "expired" }));
     }
@@ -401,6 +407,7 @@ pub async fn reset_cert(State(state): State<Shared>) -> ApiResult<StatusCode> {
     state.emit(Audience::Host, "devices", &json!({}));
     state.emit(Audience::Host, "settings", &json!({}));
     tracing::info!("certificates reset; paired devices must pair again");
+    reset.map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

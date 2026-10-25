@@ -60,6 +60,8 @@ pub struct Tls {
     ca: RwLock<CaInfo>,
     leaf_dns: RwLock<Option<String>>,
     leaf_ips: RwLock<Vec<IpAddr>>,
+    /// `init` had to make a new CA (none, or the one there was unusable).
+    new_ca: bool,
 }
 
 fn random_serial() -> SerialNumber {
@@ -119,13 +121,14 @@ impl Tls {
     pub fn init(dir: &Path, host_label: &str, host_dns: Option<String>, ips: &[IpAddr]) -> Result<Tls> {
         install_crypto_provider();
         std::fs::create_dir_all(dir)?;
-        let (ca_pem, issuer) = match Self::load_ca(dir) {
-            Ok(v) => v,
+        let (ca_pem, issuer, new_ca) = match Self::load_ca(dir) {
+            Ok((pem, issuer)) => (pem, issuer, false),
             Err(e) => {
                 if Self::ca_cert_path(dir).exists() {
                     tracing::warn!("existing CA unusable ({e:#}); creating a new one");
                 }
-                Self::create_ca(dir, host_label)?
+                let (pem, issuer) = Self::create_ca(dir, host_label)?;
+                (pem, issuer, true)
             }
         };
         let wanted = Self::wanted_ips(ips);
@@ -137,7 +140,14 @@ impl Tls {
             ca: RwLock::new(CaInfo::new(ca_pem)?),
             leaf_dns: RwLock::new(host_dns),
             leaf_ips: RwLock::new(wanted),
+            new_ca,
         })
+    }
+
+    /// Whether this start made a new CA: devices paired before it cannot be
+    /// taken to have paired under it.
+    pub fn made_new_ca(&self) -> bool {
+        self.new_ca
     }
 
     pub fn rustls_config(&self) -> RustlsConfig {
@@ -200,10 +210,12 @@ impl Tls {
     /// Throws away the CA and server certificate and starts fresh.
     pub fn reset(&self, host_label: &str, ips: &[IpAddr]) -> Result<()> {
         let (ca_pem, issuer) = Self::create_ca(&self.dir, host_label)?;
+        // On disk now, so the current one from here on, also if the server
+        // certificate cannot be issued below (the next start issues it).
+        *self.ca.write().unwrap() = CaInfo::new(ca_pem.clone())?;
         let wanted = Self::wanted_ips(ips);
         let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.leaf_dns().as_deref(), &wanted, true)?;
         self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
-        *self.ca.write().unwrap() = CaInfo::new(ca_pem)?;
         *self.leaf_ips.write().unwrap() = wanted;
         Ok(())
     }
@@ -267,8 +279,13 @@ impl Tls {
         p.serial_number = Some(random_serial());
         let cert = p.self_signed(&key)?;
         let cert_pem = cert.pem();
-        write_private(&Self::ca_key_path(dir), &key.serialize_pem())?;
-        std::fs::write(Self::ca_cert_path(dir), &cert_pem)?;
+        // Into place only once both are written: a failed write (a full disk)
+        // leaves the CA that was there.
+        let (key_new, cert_new) = (dir.join("ca.key.pem.new"), dir.join("ca.pem.new"));
+        write_private(&key_new, &key.serialize_pem())?;
+        std::fs::write(&cert_new, &cert_pem)?;
+        std::fs::rename(&key_new, Self::ca_key_path(dir))?;
+        std::fs::rename(&cert_new, Self::ca_cert_path(dir))?;
         // Any existing server certificate was signed by the old CA.
         let _ = std::fs::remove_file(Self::leaf_cert_path(dir));
         let issuer = Issuer::from_ca_cert_pem(&cert_pem, key)?;

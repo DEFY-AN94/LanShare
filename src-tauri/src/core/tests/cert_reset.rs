@@ -48,6 +48,9 @@ async fn after_a_reset_every_phone_pairs_again() {
     let code = send(&e.local, host_req(Method::POST, "/api/host/pairing", Some(json!({})))).await.json()["code"].as_str().unwrap().to_string();
     let request = send(&e.lan, dev_req(Method::POST, "/api/pair/request", None, Body::from(json!({ "code": code, "name": "Test iPad B" }).to_string()), true)).await.json();
     let before = e.state.tls.ca_fingerprint();
+    // And the window, which hears about it.
+    let mut window = e.local.clone().oneshot(host_req(Method::GET, "/api/events", None)).await.unwrap().into_body().into_data_stream();
+    assert!(String::from_utf8_lossy(&window.next().await.unwrap().unwrap()).contains("connected"));
 
     assert_eq!(send(&e.local, host_req(Method::POST, "/api/host/reset-cert", Some(json!({})))).await.status, StatusCode::NO_CONTENT);
     assert_ne!(e.state.tls.ca_fingerprint(), before);
@@ -59,6 +62,13 @@ async fn after_a_reset_every_phone_pairs_again() {
     }
     assert!(seen.contains("event: revoked"), "{seen}");
     assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
+    let mut told = String::new();
+    while let Ok(Some(Ok(chunk))) = tokio::time::timeout(Duration::from_millis(300), window.next()).await {
+        told.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    let expired = format!("\"id\":\"{}\",\"status\":\"expired\"", request["request_id"].as_str().unwrap());
+    assert!(told.contains("event: pairing_done") && told.contains(&expired), "{told}");
+    assert!(told.contains("event: devices") && told.contains("event: settings"), "{told}");
     // The pairing under way is gone.
     let approve = format!("/api/host/pairing/requests/{}/approve", request["request_id"].as_str().unwrap());
     assert_eq!(send(&e.local, host_req(Method::POST, &approve, Some(json!({})))).await.status, StatusCode::NOT_FOUND);
@@ -107,6 +117,69 @@ async fn a_root_replaced_at_startup_means_pairing_again_too() {
     let Env { _dir: dir, .. } = e;
     std::fs::remove_file(dir.path().join("tls").join("ca.key.pem")).unwrap();
     let e = env_in(dir);
+    assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
+    assert!(needs_repair(&e, &id).await);
+}
+
+/// The same on the first start after an upgrade: devices from before cannot
+/// be taken to have paired under a root that start had to make.
+#[tokio::test]
+async fn a_root_made_at_the_upgrade_start_is_not_adopted() {
+    let e = env();
+    let cookie = pair(&e).await;
+    let id = device_id(&e, &cookie).await;
+    let Env { _dir: dir, .. } = e;
+    rusqlite::Connection::open(dir.path().join("data").join("lanshare.db")).unwrap().execute("UPDATE devices SET ca_fingerprint = NULL", []).unwrap();
+    std::fs::remove_file(dir.path().join("tls").join("ca.key.pem")).unwrap();
+    let e = env_in(dir);
+    assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
+    assert!(needs_repair(&e, &id).await);
+}
+
+/// A reset that wrote the new root but could not issue the server
+/// certificate (a full disk): devices pair again now, not only after the
+/// next start.
+#[tokio::test]
+async fn a_reset_that_fails_part_way_still_takes_effect() {
+    let e = env();
+    let cookie = pair(&e).await;
+    let id = device_id(&e, &cookie).await;
+    let mut stream = e.lan.clone().oneshot(dev_req(Method::GET, "/api/events", Some(&cookie), Body::empty(), false)).await.unwrap().into_body().into_data_stream();
+    assert!(String::from_utf8_lossy(&stream.next().await.unwrap().unwrap()).contains("connected"));
+    let code = send(&e.local, host_req(Method::POST, "/api/host/pairing", Some(json!({})))).await.json()["code"].as_str().unwrap().to_string();
+    let request = send(&e.lan, dev_req(Method::POST, "/api/pair/request", None, Body::from(json!({ "code": code, "name": "Test iPad B" }).to_string()), true)).await.json();
+    let leaf = e._dir.path().join("tls").join("server.pem");
+    std::fs::remove_file(&leaf).unwrap();
+    std::fs::create_dir(&leaf).unwrap();
+    let before = e.state.tls.ca_fingerprint();
+    assert_eq!(send(&e.local, host_req(Method::POST, "/api/host/reset-cert", Some(json!({})))).await.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let now = e.state.tls.ca_fingerprint();
+    assert_ne!(now, before);
+    assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
+    assert!(needs_repair(&e, &id).await);
+    // What the old root let in ends as after a reset that went through.
+    let mut seen = String::new();
+    while let Ok(Some(Ok(chunk))) = tokio::time::timeout(Duration::from_secs(1), stream.next()).await {
+        seen.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    assert!(seen.contains("event: revoked"), "{seen}");
+    let approve = format!("/api/host/pairing/requests/{}/approve", request["request_id"].as_str().unwrap());
+    assert_eq!(send(&e.local, host_req(Method::POST, &approve, Some(json!({})))).await.status, StatusCode::NOT_FOUND);
+    // The next start finds the same root.
+    std::fs::remove_dir(&leaf).unwrap();
+    let Env { _dir: dir, .. } = e;
+    let e = env_in(dir);
+    assert_eq!(e.state.tls.ca_fingerprint(), now);
+    assert!(needs_repair(&e, &id).await);
+}
+
+/// A device row with no root recorded, while running: it must pair again.
+#[tokio::test]
+async fn a_device_with_no_root_recorded_is_refused() {
+    let e = env();
+    let cookie = pair(&e).await;
+    let id = device_id(&e, &cookie).await;
+    rusqlite::Connection::open(e.state.data_dir.join("lanshare.db")).unwrap().execute("UPDATE devices SET ca_fingerprint = NULL", []).unwrap();
     assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
     assert!(needs_repair(&e, &id).await);
 }
