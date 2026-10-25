@@ -161,7 +161,9 @@ fn authenticate_device(state: &Shared, headers: &HeaderMap) -> Option<Session> {
     let value = cookie(headers, DEVICE_COOKIE)?;
     let (id, secret) = value.split_once('.')?;
     let device = state.db.device(id).ok().flatten()?;
-    if !ct_eq(sha256_hex(secret).as_bytes(), device.token_hash.as_bytes()) {
+    // Paired under a root certificate the computer no longer has: the
+    // cookie could have been taken through that certificate.
+    if !ct_eq(sha256_hex(secret).as_bytes(), device.token_hash.as_bytes()) || state.needs_repair(&device) {
         return None;
     }
     let _ = state.db.touch_device(id, now_ms());

@@ -1,7 +1,7 @@
 // Which parts of a chat message become links.
 
 import { expect, it } from "vitest";
-import { splitLinks } from "./format";
+import { fingerprintRows, splitLinks } from "./format";
 
 it("keeps trailing punctuation as text beside the link", () => {
   const punctuation = ".,;:!?)]}'\"";
@@ -48,4 +48,10 @@ it("handles a long punctuation suffix without losing text", () => {
 it("handles a long punctuation run ending in a nonmatch without retrying the run", () => {
   const url = `https://example.com/${"!".repeat(200_000)}x`;
   expect(splitLinks(url)).toEqual([{ text: url, href: url }]);
+});
+
+it("shows a SHA-256 fingerprint as iPhone does, 8 pairs to a row", () => {
+  const hex = "0123456789abcdef".repeat(4);
+  expect(fingerprintRows(hex)).toEqual(Array(4).fill("01 23 45 67 89 AB CD EF"));
+  expect(fingerprintRows("")).toEqual([]);
 });

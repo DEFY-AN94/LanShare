@@ -14,7 +14,7 @@ use super::auth::Session;
 use super::awake::KeepAwake;
 use super::bridge::{HostBridge, Withdraw};
 use super::config::Config;
-use super::db::{Db, MessageRow};
+use super::db::{Db, DeviceRow, MessageRow};
 use super::disk;
 use super::events::{Audience, ServerEvent};
 use super::model::{Address, FileRef, MessageOut};
@@ -170,6 +170,16 @@ fn has_chat_dirs(root: &Path) -> bool {
 }
 
 pub type Shared = Arc<AppState>;
+
+/// Devices paired before devices remembered their root certificate (before
+/// v0.3.1) count as paired under the current one, unless this start had to
+/// make a new one: then they must pair again too. Before `AppState::new`.
+pub fn adopt_devices(db: &Db, tls: &Tls) -> anyhow::Result<()> {
+    if !tls.made_new_ca() {
+        db.adopt_ca(&tls.ca_fingerprint())?;
+    }
+    Ok(())
+}
 
 pub struct StateParts {
     pub db: Db,
@@ -331,6 +341,12 @@ impl AppState {
         self.revoked.lock().unwrap().insert(device_id.to_string());
         self.transfer_changes.send_modify(|_| {});
         self.emit(Audience::Device(device_id.to_string()), "revoked", &json!({}));
+    }
+
+    /// A device paired under another root certificate than the current one
+    /// (reset in Settings, or replaced at startup): it must pair again.
+    pub fn needs_repair(&self, device: &DeviceRow) -> bool {
+        device.ca_fingerprint.as_deref() != Some(self.tls.ca_fingerprint().as_str())
     }
 
     pub fn is_revoked(&self, device_id: &str) -> bool {

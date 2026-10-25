@@ -57,6 +57,8 @@ export interface Device {
   created_at: number;
   last_seen_at: number | null;
   online: boolean;
+  /** Paired under an earlier root certificate: it must pair again, and its history can only be read. */
+  needs_repair: boolean;
   last_message: Message | null;
   /** Messages from this device the computer has not read yet. */
   unread: number;
@@ -78,6 +80,15 @@ export interface PairingSession {
   urls: PairingUrl[];
   ca_fingerprint: string;
   network_warning: string | null;
+}
+
+/** Step 1 of 添加设备: where a phone installs the root certificate. */
+export interface CertSetup {
+  urls: PairingUrl[];
+  ca_name: string;
+  ca_fingerprint: string;
+  network_warning: string | null;
+  paused: boolean;
 }
 
 export interface PairRequest {

@@ -131,3 +131,11 @@ export function newClientId(): string {
   crypto.getRandomValues(b);
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
+
+/** A SHA-256 fingerprint the way iPhone certificate details show it ("AB CD …"), 8 pairs to a row. */
+export function fingerprintRows(hex: string): string[] {
+  const pairs = hex.toUpperCase().match(/.{2}/g) ?? [];
+  const rows: string[] = [];
+  for (let i = 0; i < pairs.length; i += 8) rows.push(pairs.slice(i, i + 8).join(" "));
+  return rows;
+}

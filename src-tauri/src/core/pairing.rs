@@ -113,6 +113,16 @@ impl Pairing {
         self.session = None;
     }
 
+    /// Drops the session and every request, also approved ones whose phone
+    /// has not collected its cookie yet. Returns the ids of those still
+    /// waiting for the computer's answer. The rate limits stay.
+    pub fn clear(&mut self) -> Vec<String> {
+        self.session = None;
+        let waiting = self.requests.values().filter(|r| r.status == Status::Pending).map(|r| r.id.clone()).collect();
+        self.requests.clear();
+        waiting
+    }
+
     fn rate_limited(&mut self, ip: IpAddr, now: i64) -> bool {
         let q = self.attempts.entry(ip).or_default();
         while q.front().is_some_and(|t| now - t > RATE_WINDOW_MS) {

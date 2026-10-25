@@ -132,9 +132,10 @@ describe("offline shell", () => {
     expect(sw.storedPaths()).toEqual(["/", "/assets/index-b2.js"]);
   });
 
-  it("leaves pairing, ?direct and the API to the network", () => {
+  it("leaves pairing, the certificate page, ?direct and the API to the network", () => {
     const sw = boot(() => unreachable);
     expect(sw.request("/pair?t=one-time")).toBeUndefined();
+    expect(sw.request("/pair?cert")).toBeUndefined();
     expect(sw.request("/?direct=1")).toBeUndefined();
     expect(sw.request("/api/me", "cors")).toBeUndefined();
     expect(sw.fetch).not.toHaveBeenCalled();

@@ -1369,11 +1369,34 @@ h2 {
   border-radius: 10px;
   background: var(--surface-2);
 }
-.fingerprint-short {
+.fingerprint-full {
   display: block;
   margin-top: 4px;
-  font-size: 14px;
+  font-size: 13px;
   letter-spacing: 1px;
+}
+.fingerprint-full span {
+  display: block;
+}
+.add-device-step {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.add-device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 14px;
+}
+.conv-tag,
+.device-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
 }
 .pair-switch {
   display: block;

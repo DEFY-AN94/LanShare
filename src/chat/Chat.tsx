@@ -16,6 +16,8 @@ interface Props {
   deviceId: string | null;
   isHost: boolean;
   disabled?: boolean;
+  /** Why the message box is off, in place of "已断开连接". */
+  disabledText?: string;
   /** Not connected right now: messages queue until the connection is back. */
   offline?: boolean;
   /** May also move a file message's attachment to the computer's Trash. */
@@ -26,7 +28,7 @@ interface Props {
 
 const GROUP_GAP_MS = 5 * 60_000;
 
-export function Chat({ deviceId, isHost, disabled, offline, canTrashFiles = isHost, header, emptyHint }: Props) {
+export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTrashFiles = isHost, header, emptyHint }: Props) {
   const conv = useConversation(deviceId);
   const toast = useToast();
   const [actionFor, setActionFor] = useState<Message | null>(null);
@@ -178,6 +180,7 @@ export function Chat({ deviceId, isHost, disabled, offline, canTrashFiles = isHo
       </div>
       <Composer
         disabled={disabled}
+        disabledText={disabledText}
         offline={offline}
         draftKey={keyFor(deviceId)}
         persistDraft={!isHost}

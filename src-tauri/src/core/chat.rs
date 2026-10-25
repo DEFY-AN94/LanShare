@@ -20,13 +20,29 @@ use super::util::now_ms;
 
 pub const MAX_TEXT_CHARS: usize = 100_000;
 
+/// What the computer hears when it sends to a device that must pair again.
+pub const NEEDS_REPAIR: &str = "这台设备要重新配对后才能收到消息";
+
 /// The host names a conversation explicitly; a device always uses its own.
 pub(crate) fn conversation(state: &Shared, session: &Session, requested: Option<&str>) -> ApiResult<(String, String)> {
+    to_device(state, session, requested, false)
+}
+
+/// The same, to send in it: a device that must pair again would never get
+/// the message (`AppState::needs_repair`).
+fn conversation_to_send(state: &Shared, session: &Session, requested: Option<&str>) -> ApiResult<(String, String)> {
+    to_device(state, session, requested, true)
+}
+
+fn to_device(state: &Shared, session: &Session, requested: Option<&str>, sending: bool) -> ApiResult<(String, String)> {
     match session {
         Session::Device { id, name, .. } => Ok((id.clone(), name.clone())),
         Session::Host => {
             let id = requested.filter(|s| !s.is_empty()).ok_or_else(|| ApiError::bad_request("缺少设备参数"))?;
             let device = state.db.device(id)?.ok_or_else(|| ApiError::not_found("设备不存在"))?;
+            if sending && state.needs_repair(&device) {
+                return Err(ApiError::conflict(NEEDS_REPAIR));
+            }
             Ok((device.id, device.name))
         }
     }
@@ -74,7 +90,7 @@ fn after_insert(state: &Shared, session: &Session, device_name: &str, out: &Mess
 }
 
 pub fn send_text(state: &Shared, session: &Session, device: Option<&str>, client_id: Option<&str>, text: &str) -> ApiResult<MessageOut> {
-    let (device_id, device_name) = conversation(state, session, device)?;
+    let (device_id, device_name) = conversation_to_send(state, session, device)?;
     if text.trim().is_empty() {
         return Err(ApiError::bad_request("消息不能为空"));
     }
@@ -114,7 +130,7 @@ pub struct UploadRequest {
 /// Saves an attachment to 收件箱 (from a phone) or 已发送 (from the computer)
 /// and adds its message. `body` is taken only once every check has passed.
 pub async fn store_upload(state: &Shared, session: &Session, q: &UploadRequest, declared: Option<u64>, body: &mut Option<Body>) -> ApiResult<MessageOut> {
-    let (device_id, device_name) = conversation(state, session, q.device.as_deref())?;
+    let (device_id, device_name) = conversation_to_send(state, session, q.device.as_deref())?;
     let client_id = valid_client_id(q.client_id.as_deref())?;
     // A retried upload that already went through returns the original message.
     if let Some(cid) = client_id

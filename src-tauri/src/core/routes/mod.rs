@@ -23,6 +23,7 @@ use super::state::Shared;
 fn api(state: &Shared) -> Router<Shared> {
     let host_only = Router::new()
         .route("/api/host/overview", get(host::overview))
+        .route("/api/host/cert-setup", get(host::cert_setup))
         .route("/api/host/pairing", post(host::start_pairing).delete(host::cancel_pairing))
         .route("/api/host/pairing/requests", get(host::pairing_requests))
         .route("/api/host/pairing/requests/{id}/approve", post(host::approve))
