@@ -228,6 +228,7 @@ function HostChat({
               <span className="conv-body">
                 <span className="conv-top">
                   <span className="conv-name ellipsis">{d.name}</span>
+                  {d.needs_repair && <span className="conv-tag">需要重新配对</span>}
                   {last && <span className="conv-time">{formatShort(last.created_at)}</span>}
                 </span>
                 <span className="conv-preview ellipsis">{preview}</span>
@@ -242,10 +243,14 @@ function HostChat({
           key={open.id}
           deviceId={open.id}
           isHost
+          disabled={open.needs_repair}
+          disabledText="这台设备要重新配对后才能收到消息"
           header={
             <div className="chat-header">
               <span className="chat-title">{open.name}</span>
-              <span className={`status ${open.online ? "online" : ""}`}>{open.online ? "在线" : "离线（消息会在它打开网页后送达）"}</span>
+              <span className={`status ${open.online ? "online" : ""}`}>
+                {open.needs_repair ? "需要重新配对（电脑的证书换过了）" : open.online ? "在线" : "离线（消息会在它打开网页后送达）"}
+              </span>
             </div>
           }
         />

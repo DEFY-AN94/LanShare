@@ -6,6 +6,7 @@ import { CopyButton } from "../chat/MessageBubble";
 import { api } from "../lib/api";
 import { events } from "../lib/events";
 import { hostOpen, hostOpenUrl } from "../lib/fileActions";
+import { fingerprintRows } from "../lib/format";
 import type { HostOverview, LoginItemInfo } from "../lib/types";
 import { useDevices } from "../devices/useDevices";
 import { acceleratorFromEvent, displayAccelerator, windowsCode } from "./shortcut";
@@ -108,7 +109,7 @@ export function SettingsPage() {
     const ok = await dialog.confirm({
       title: "重置证书？",
       message:
-        "会生成新的根证书和服务器证书，新证书名称末尾的编号会变。已在 iPhone 上安装旧证书的话，需要在「VPN 与设备管理」里删除旧证书并重新安装；手机若一直显示「连接不上电脑」，点那里的「直接从电脑打开」。已配对的设备不受影响。",
+        "会生成新的根证书和服务器证书，新证书名称末尾的编号会变。所有已配对的设备都要重新配对：它们在设备列表里会标成「需要重新配对」，聊天记录仍可以在这台电脑上查看。在 iPhone 的「设置 › 通用 › VPN 与设备管理」里删掉旧证书，再按「添加设备」第一步装新证书、重新配对。",
       confirmText: "重置",
       danger: true,
     });
@@ -138,7 +139,7 @@ export function SettingsPage() {
     await run(api.post("/api/host/chat-retention", { days }), days > 0 ? `已设为保留 ${days} 天` : "已关闭自动删除");
   };
 
-  const fingerprint = info.ca_fingerprint.match(/.{1,2}/g)?.join(":").toUpperCase() ?? "";
+  const fingerprint = fingerprintRows(info.ca_fingerprint).join(" ");
   const mac = info.platform === "macos";
   const trayName = mac ? "菜单栏" : "任务栏通知区域";
   const notifyStatus: Record<string, string> = {
@@ -249,7 +250,7 @@ export function SettingsPage() {
               onChange={(e) => void run(api.post("/api/host/clipboard/target", { device: e.target.value || null }))}
             >
               <option value="">最近聊天的设备</option>
-              {(devices ?? []).map((d) => (
+              {(devices ?? []).filter((d) => !d.needs_repair).map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
@@ -384,7 +385,7 @@ export function SettingsPage() {
           </div>
         </div>
         <div className="setting-row">
-          <div className="muted small">怀疑证书泄露或想重新开始时可以重置。</div>
+          <div className="muted small">怀疑证书泄露或想重新开始时可以重置。重置后所有设备都要重新配对。</div>
           <button className="btn btn-danger-outline" onClick={() => void resetCert()}>
             重置证书
           </button>

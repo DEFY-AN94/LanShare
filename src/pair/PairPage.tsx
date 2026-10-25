@@ -80,7 +80,7 @@ export function PairPage({ token: initialToken, notPaired }: Props) {
             <p className="muted">
               {token
                 ? "确认设备名称后点「请求连接」，然后在电脑上点「允许」。"
-                : "在电脑端 LanShare 点「添加设备」，扫描二维码；或者在下面输入电脑上显示的 6 位配对码。"}
+                : "在电脑端 LanShare 点「添加设备」：先按第一步装证书（推荐），再扫第二步的配对二维码；也可以在下面输入电脑上显示的 6 位配对码。"}
             </p>
             <form
               className="pair-form"
@@ -155,14 +155,23 @@ export function PairPage({ token: initialToken, notPaired }: Props) {
             >
               输入配对码重试
             </button>
-            <p className="muted small">也可以在电脑上重新点「添加设备」，再扫一次二维码。</p>
+            <p className="muted small">也可以在电脑上重新点「添加设备」，再扫一次配对二维码。</p>
           </>
         )}
       </div>
       {stage !== "done" && (
-        <p className="muted small pair-hint">二维码 2 分钟内有效：建议先完成配对，再按下面的步骤安装证书（配对后也能在右上角菜单里找到）。</p>
+        <p className="muted small pair-hint">配对二维码 2 分钟内有效。推荐先在电脑「添加设备」第一步装好证书再配对；没装的话，配对后也能在右上角菜单里安装。</p>
       )}
       <CertGuide compact />
+    </div>
+  );
+}
+
+/** Opened from the QR code of 添加设备 step 1: installs the certificate. Carries no secret. */
+export function CertPage() {
+  return (
+    <div className="pair-page">
+      <CertGuide beforePairing />
     </div>
   );
 }

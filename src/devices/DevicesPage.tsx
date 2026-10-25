@@ -69,11 +69,17 @@ export function DevicesPage() {
               <span className={`dot ${d.online ? "online" : ""}`} />
             </div>
             <div className="device-body">
-              <div className="device-name">{d.name}</div>
+              <div className="device-name">
+                {d.name}
+                {d.needs_repair && <span className="device-tag">需要重新配对</span>}
+              </div>
               <div className="muted small">
-                {d.online ? "在线" : `最后活动：${formatRelative(d.last_seen_at)}`} · 配对于 {formatDayTime(d.created_at)}
+                {d.needs_repair
+                  ? "电脑的证书换过了：在这台手机上删掉旧证书，再点「添加设备」重新配对。聊天记录仍可以在这里查看"
+                  : `${d.online ? "在线" : `最后活动：${formatRelative(d.last_seen_at)}`} · 配对于 ${formatDayTime(d.created_at)}`}
               </div>
             </div>
+            {!d.needs_repair && (
             <label className="perm">
               <span className="sr-only">文件权限</span>
               <select
@@ -85,6 +91,7 @@ export function DevicesPage() {
                 <option value="ro">文件：只读</option>
               </select>
             </label>
+            )}
             <button className="icon-btn" title="改名" aria-label="改名" onClick={() => void rename(d)}>
               <Icon name="edit" />
             </button>

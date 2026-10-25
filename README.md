@@ -19,14 +19,16 @@ Status: the Mac version is done. The Windows version is built, tested and packag
 ## Getting started
 
 1. Open LanShare (download it from the repository's **Releases** page, or build it yourself, see [Development](#development)). On first launch macOS may ask whether LanShare can accept incoming network connections. Click **Allow**, or the iPhone will not be able to connect.
-2. On the computer, click **添加设备** (Add device) and scan the QR code with the iPhone's Camera app. The iPhone and the computer must be on the same Wi-Fi network.
-3. When Safari says "This Connection Is Not Private", tap Show Details › visit this website. To get rid of this warning for good, install the computer's certificate after pairing by following the steps on the page (recommended). Before installing it, check that the certificate fingerprint matches the one shown on the computer.
-4. On the iPhone, tap **请求连接** (Request connection). Check that the confirmation code is the same on both screens, then click **允许** (Allow) on the computer.
+2. On the computer, click **添加设备** (Add device). The iPhone and the computer must be on the same Wi-Fi network.
+3. Step 1 (recommended): scan the first QR code with the iPhone's Camera app and follow the steps to install the computer's certificate. Before installing it, check that its SHA-256 fingerprint is exactly the one the computer shows. With the certificate installed, Safari checks that it is really talking to your computer. On a Wi-Fi network you trust you can skip this; Safari then warns about the connection, and LanShare relies on the network itself.
+4. Step 2: scan the pairing QR code and tap **请求连接** (Request connection) on the iPhone. Check that the confirmation code is the same on both screens, then click **允许** (Allow) on the computer.
 5. In Safari, tap Share › Add to Home Screen so LanShare opens with one tap next time. If an icon you added earlier shows a gray letter, delete it and add it again.
 
 When you upload from **Photo Library** on the iPhone, iOS converts HEIC photos to JPEG and HEVC videos to H.264 (the resolution stays the same). To send the originals, first save them to Files from the Photos app (Share › Save to Files), then pick **Choose File** in LanShare. The page points this out once, on your first upload.
 
 Closing the window keeps LanShare running in the background: in the menu bar and Dock on macOS, and in the notification area (system tray) on Windows. The menu bar or tray icon's menu has **打开 LanShare** (Open LanShare), **暂停共享** (Pause sharing) and **退出 LanShare** (Quit LanShare).
+
+An iPhone with the computer's certificate installed never shows a certificate warning for LanShare; if one appears, close the page. After **重置证书** (Reset certificate) in Settings, every phone pairs again: delete the old certificate on the iPhone, then go through 添加设备 again. Old entries stay in the device list marked **需要重新配对** (Pair again), with their chat history on the computer.
 
 When the computer cannot be reached (it is asleep, or the iPhone is on another network), the Home Screen app still opens and keeps trying to connect. Texts you send meanwhile wait on the iPhone and arrive once it reconnects, and an unsent draft survives closing the app. Tap a message to copy or delete it; a deleted message disappears on both sides. Deleting a file message keeps the file on the computer unless you choose to move it to the Trash.
 

@@ -1,8 +1,9 @@
 //! Local certificate authority + server certificate.
 //!
 //! The CA is name-constrained to local names (`localhost`, `*.local`) and
-//! private IP ranges, so even if its key leaked it could not impersonate
-//! public websites. The server certificate is re-issued when the machine's
+//! private IP ranges, and (from v0.3.1) limited to server authentication, so
+//! even if its key leaked it could not impersonate public websites or sign
+//! anything but a server. The server certificate is re-issued when the machine's
 //! LAN addresses or `.local` name change or it nears expiry, and hot-swapped
 //! without restart.
 
@@ -246,6 +247,8 @@ impl Tls {
         p.distinguished_name = dn;
         p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
         p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
+        // Roots made before v0.3.1 have none and are kept as they are.
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         let now = OffsetDateTime::now_utc();
         p.not_before = now - Duration::days(1);
         p.not_after = now + Duration::days(CA_DAYS);

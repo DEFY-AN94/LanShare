@@ -14,7 +14,8 @@ use crate::core::db::DeviceRow;
 use crate::core::error::{ApiError, ApiResult};
 use crate::core::bridge::Withdraw;
 use crate::core::events::Audience;
-use crate::core::model::{DeviceOut, HostOverview, PairRequestOut, PairingSession, PairingUrl};
+use crate::core::chat::NEEDS_REPAIR;
+use crate::core::model::{CertSetup, DeviceOut, HostOverview, PairRequestOut, PairingSession, PairingUrl};
 use crate::core::paths::{Sandbox, unsafe_root_reason};
 use crate::core::state::Shared;
 use crate::core::transfer::checked_blocking;
@@ -128,10 +129,11 @@ pub struct TargetBody {
 /// Where the clipboard goes; `None` is the most recent conversation.
 pub async fn set_clipboard_target(State(state): State<Shared>, Json(b): Json<TargetBody>) -> ApiResult<StatusCode> {
     let device = b.device.filter(|d| !d.is_empty());
-    if let Some(d) = &device
-        && state.db.device(d)?.is_none()
-    {
-        return Err(ApiError::not_found("设备不存在"));
+    if let Some(d) = &device {
+        let d = state.db.device(d)?.ok_or_else(|| ApiError::not_found("设备不存在"))?;
+        if state.needs_repair(&d) {
+            return Err(ApiError::conflict(NEEDS_REPAIR));
+        }
     }
     state.set_clipboard_target(device)?;
     state.emit(Audience::Host, "settings", &json!({}));
@@ -153,6 +155,26 @@ fn qr_svg(text: &str) -> String {
         }
         Err(_) => String::new(),
     }
+}
+
+/// Step 1 of 添加设备: the page that installs the root certificate on a
+/// phone. Its address carries no secret and opens no pairing session.
+pub async fn cert_setup(State(state): State<Shared>) -> Json<CertSetup> {
+    let urls = state
+        .addresses()
+        .into_iter()
+        .map(|a| {
+            let url = format!("https://{}:{}/pair?cert", a.ip, state.lan_port);
+            PairingUrl { qr_svg: qr_svg(&url), url, ip: a.ip, iface: a.iface }
+        })
+        .collect();
+    Json(CertSetup {
+        urls,
+        ca_name: state.tls.ca_name(),
+        ca_fingerprint: state.tls.ca_fingerprint(),
+        network_warning: state.network_warning(),
+        paused: state.is_paused(),
+    })
 }
 
 pub async fn start_pairing(State(state): State<Shared>) -> Json<PairingSession> {
@@ -178,7 +200,10 @@ pub async fn pairing_requests(State(state): State<Shared>) -> Json<Vec<PairReque
 }
 
 pub async fn approve(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let req = state.pairing.lock().unwrap().get_pending(&id, now_ms()).ok_or_else(|| ApiError::not_found("请求已过期"))?;
+    // Held throughout: a certificate reset (`reset_cert`) comes either before
+    // the request is found or after the device was added under the old root.
+    let mut pairing = state.pairing.lock().unwrap();
+    let req = pairing.get_pending(&id, now_ms()).ok_or_else(|| ApiError::not_found("请求已过期"))?;
     let device_id = random_hex(12);
     let secret = random_token();
     state.db.insert_device(&DeviceRow {
@@ -188,11 +213,13 @@ pub async fn approve(State(state): State<Shared>, Path(id): Path<String>) -> Api
         can_write: true,
         created_at: now_ms(),
         last_seen_at: None,
+        ca_fingerprint: Some(state.tls.ca_fingerprint()),
     })?;
-    if !state.pairing.lock().unwrap().approve(&id, format!("{device_id}.{secret}")) {
+    if !pairing.approve(&id, format!("{device_id}.{secret}")) {
         let _ = state.db.delete_device(&device_id);
         return Err(ApiError::not_found("请求已过期"));
     }
+    drop(pairing);
     tracing::info!("paired new device {} ({})", req.name, req.ip);
     state.emit(Audience::Host, "pairing_done", &json!({ "id": id, "status": "approved", "name": req.name }));
     state.emit(Audience::Host, "devices", &json!({}));
@@ -212,6 +239,7 @@ fn device_out(state: &Shared, d: DeviceRow) -> DeviceOut {
     let unread = state.unread_counts().get(&d.id).copied().unwrap_or(0);
     DeviceOut {
         online: state.is_online(&d.id),
+        needs_repair: state.needs_repair(&d),
         id: d.id,
         name: d.name,
         can_write: d.can_write,
@@ -345,11 +373,34 @@ pub async fn pick_shared_root(State(state): State<Shared>, Extension(_s): Extens
     Ok(overview(State(state)).await.into_response())
 }
 
+/// A new root certificate: every device paired under the old one must pair
+/// again (`AppState::needs_repair`), since a cookie could have been taken
+/// through it. Their history stays on the computer.
 pub async fn reset_cert(State(state): State<Shared>) -> ApiResult<StatusCode> {
     let ips = state.address_ips();
     let host = state.host_name.clone();
     let st = state.clone();
-    tokio::task::spawn_blocking(move || st.tls.reset(&host, &ips)).await.map_err(ApiError::internal)??;
+    // Pairing under way belonged to the old certificate; the lock keeps an
+    // approval (`approve`) from landing in between.
+    let dropped = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<String>> {
+        let mut pairing = st.pairing.lock().unwrap();
+        st.tls.reset(&host, &ips)?;
+        Ok(pairing.clear())
+    })
+    .await
+    .map_err(ApiError::internal)??;
+    for id in dropped {
+        state.emit(Audience::Host, "pairing_done", &json!({ "id": id, "status": "expired" }));
+    }
+    // Their pages hear they were removed, and what they still have open ends.
+    for d in state.db.devices()? {
+        if state.needs_repair(&d) {
+            state.revoke(&d.id);
+        }
+    }
+    state.emit(Audience::Host, "devices", &json!({}));
+    state.emit(Audience::Host, "settings", &json!({}));
+    tracing::info!("certificates reset; paired devices must pair again");
     Ok(StatusCode::NO_CONTENT)
 }
 

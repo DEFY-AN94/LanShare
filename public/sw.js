@@ -6,8 +6,9 @@
 //
 // Only the page and /assets/ are stored. Nothing from /api/ (messages,
 // files, the event stream) ever goes through this cache, and neither does
-// pairing (/pair) or a page opened with ?direct: the app's way past the
-// stored copy, for when the computer's certificate changed.
+// pairing or installing the certificate (/pair) or a page opened with
+// ?direct: the app's way past the stored copy, for when the computer's
+// certificate changed.
 
 const CACHE = "lanshare-shell-v1";
 const SHELL = "/";

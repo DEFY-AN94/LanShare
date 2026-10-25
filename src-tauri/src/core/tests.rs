@@ -431,7 +431,7 @@ async fn earlier_chat_folders_stay_closed_after_a_folder_change() {
         file_root: Some(old_root.to_str().unwrap()),
         file_created: None,
     };
-    parts.db.insert_device(&super::db::DeviceRow { id: "d".into(), name: "p".into(), token_hash: "h".into(), can_write: true, created_at: 1, last_seen_at: None }).unwrap();
+    parts.db.insert_device(&super::db::DeviceRow { id: "d".into(), name: "p".into(), token_hash: "h".into(), can_write: true, created_at: 1, last_seen_at: None, ca_fingerprint: None }).unwrap();
     parts.db.insert_message(&old).unwrap();
     let restarted = AppState::new(parts);
     assert!(restarted.is_chat_location(&old_root.join("收件箱").join("IMG_0001.HEIC")));
@@ -1227,6 +1227,7 @@ fn computer_name_matches_scutil() {
     assert_eq!(super::host_name(), expected);
 }
 
+mod cert_reset;
 mod chat_folders;
 mod file_races;
 mod m8;

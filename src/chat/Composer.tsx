@@ -7,6 +7,7 @@ import { openPicker } from "../lib/wakeLock";
 
 interface Props {
   disabled?: boolean;
+  disabledText?: string;
   /** Not connected: messages are queued and sent once the connection is back. */
   offline?: boolean;
   placeholder?: string;
@@ -28,7 +29,7 @@ function initialDraft(key: string, persist: boolean): string {
   return drafts.get(key) ?? (persist ? loadLocal<string>(storageKey(key), "") : "");
 }
 
-export function Composer({ disabled, offline, placeholder = "输入消息", draftKey, persistDraft = false, onSendText, onSendFiles }: Props) {
+export function Composer({ disabled, disabledText = "已断开连接", offline, placeholder = "输入消息", draftKey, persistDraft = false, onSendText, onSendFiles }: Props) {
   const [text, setText] = useState(() => initialDraft(draftKey, persistDraft));
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -108,7 +109,7 @@ export function Composer({ disabled, offline, placeholder = "输入消息", draf
         className="composer-input"
         rows={1}
         value={text}
-        placeholder={disabled ? "已断开连接" : offline ? "未连接：消息会在连上后发出" : placeholder}
+        placeholder={disabled ? disabledText : offline ? "未连接：消息会在连上后发出" : placeholder}
         disabled={disabled}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {

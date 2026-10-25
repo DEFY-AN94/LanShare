@@ -64,6 +64,9 @@ pub struct DeviceOut {
     pub created_at: i64,
     pub last_seen_at: Option<i64>,
     pub online: bool,
+    /// Paired under an earlier root certificate: it must pair again, and
+    /// its history can only be read.
+    pub needs_repair: bool,
     pub last_message: Option<MessageOut>,
     /// Messages from this device the computer has not read yet.
     pub unread: u32,
@@ -91,6 +94,19 @@ pub struct PairingSession {
     /// SHA-256 of the local CA, to compare with the profile on the phone.
     pub ca_fingerprint: String,
     pub network_warning: Option<String>,
+}
+
+/// Step 1 of 添加设备: where a phone installs the root certificate.
+#[derive(Serialize)]
+pub struct CertSetup {
+    pub urls: Vec<PairingUrl>,
+    /// As iPhone settings list the certificate.
+    pub ca_name: String,
+    /// SHA-256 of the root certificate, to compare with the profile on the phone.
+    pub ca_fingerprint: String,
+    pub network_warning: Option<String>,
+    /// Phones cannot reach the computer while sharing is paused.
+    pub paused: bool,
 }
 
 #[derive(Serialize, Clone)]

@@ -4,7 +4,7 @@ import { api, ApiError, onUnauthorized, PROBE_TIMEOUT_MS } from "../lib/api";
 import { events } from "../lib/events";
 import { clearConversationData } from "../lib/storage";
 import type { Me } from "../lib/types";
-import { PairPage } from "../pair/PairPage";
+import { CertPage, PairPage } from "../pair/PairPage";
 import { DeviceApp } from "./DeviceApp";
 import { HostApp } from "./HostApp";
 
@@ -12,6 +12,7 @@ type State =
   | { status: "loading" }
   | { status: "ready"; me: Me }
   | { status: "pair"; token: string | null }
+  | { status: "cert" }
   | { status: "unpaired" }
   | { status: "paused" }
   | { status: "error"; message: string; offline: boolean };
@@ -24,9 +25,10 @@ const hasOfflineCopy = () => !!navigator.serviceWorker?.controller;
 
 /**
  * Opens the page straight from the computer, past the stored copy (sw.js
- * leaves ?direct to the network). After the computer's certificate changed,
- * only then does Safari show its own warning and the way to the new
- * certificate. The copy itself stays, so while the computer is away the next
+ * leaves ?direct to the network): the way back for a phone without the
+ * computer's certificate once the computer's certificate changed. A phone
+ * with it installed sees no warning there; if one shows, it is not the
+ * computer. The copy itself stays, so while the computer is away the next
  * start still opens to this screen rather than Safari's error page.
  */
 function openFromComputer() {
@@ -38,6 +40,9 @@ function initialState(): State {
     history.replaceState(null, "", window.location.pathname + window.location.hash);
   }
   if (window.location.pathname === "/pair") {
+    // 添加设备 step 1. Under /pair, which phones' stored copies of older
+    // versions also leave to the computer.
+    if (new URLSearchParams(window.location.search).has("cert")) return { status: "cert" };
     const token = new URLSearchParams(window.location.search).get("t");
     // Drop the one-time token from the address bar and history right away.
     history.replaceState(null, "", "/pair");
@@ -115,6 +120,8 @@ export function App() {
       );
     case "pair":
       return <PairPage token={state.token} />;
+    case "cert":
+      return <CertPage />;
     case "unpaired":
       return <PairPage token={null} notPaired />;
     case "ready":
@@ -137,7 +144,7 @@ export function App() {
                 <li>电脑上的 LanShare 要在运行（菜单栏或任务栏里有它的图标）</li>
                 <li>电脑可能已睡眠：唤醒电脑后这里会自动连上</li>
                 <li>手机上的 VPN 可能会拦住局域网连接</li>
-                {hasOfflineCopy() && <li>电脑上重置过证书或重装过 LanShare：点下面的「直接从电脑打开」，再按 Safari 的提示操作</li>}
+                {hasOfflineCopy() && <li>电脑上重置过证书或重装过 LanShare：这台手机要重新配对。在电脑上点「添加设备」，按第一步装新证书，再扫配对二维码</li>}
               </ul>
             )}
             {waiting && <p className="muted small">正在自动重试…</p>}
@@ -145,9 +152,12 @@ export function App() {
               重试
             </button>
             {state.status === "error" && state.offline && hasOfflineCopy() && (
-              <button className="btn btn-block" onClick={openFromComputer}>
-                直接从电脑打开
-              </button>
+              <>
+                <button className="btn btn-block" onClick={openFromComputer}>
+                  从电脑重新加载
+                </button>
+                <p className="muted small">装过电脑证书的手机不会出现证书警告。如果 Safari 提示「此连接非私人连接」，请关掉页面，不要继续访问。</p>
+              </>
             )}
           </div>
         </div>

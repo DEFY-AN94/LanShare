@@ -14,7 +14,7 @@ use super::auth::Session;
 use super::awake::KeepAwake;
 use super::bridge::{HostBridge, Withdraw};
 use super::config::Config;
-use super::db::{Db, MessageRow};
+use super::db::{Db, DeviceRow, MessageRow};
 use super::disk;
 use super::events::{Audience, ServerEvent};
 use super::model::{Address, FileRef, MessageOut};
@@ -201,6 +201,10 @@ impl AppState {
         {
             tracing::warn!("could not record the shared folder's chat folders: {e}");
         }
+        // Devices paired before they remembered their root certificate.
+        if let Err(e) = p.db.adopt_ca(&p.tls.ca_fingerprint()) {
+            tracing::warn!("could not record the devices' root certificate: {e}");
+        }
         // Paths only: an earlier shared folder may be on a disk or share that is gone.
         let mut old_chat_dirs: Vec<PathBuf> = p.db.chat_roots().unwrap_or_default().iter().flat_map(|r| chat_dirs_of(Path::new(r))).collect();
         // Earlier versions saved attachments through a chat folder that was a
@@ -331,6 +335,12 @@ impl AppState {
         self.revoked.lock().unwrap().insert(device_id.to_string());
         self.transfer_changes.send_modify(|_| {});
         self.emit(Audience::Device(device_id.to_string()), "revoked", &json!({}));
+    }
+
+    /// A device paired under another root certificate than the current one
+    /// (reset in Settings, or replaced at startup): it must pair again.
+    pub fn needs_repair(&self, device: &DeviceRow) -> bool {
+        device.ca_fingerprint.as_deref() != Some(self.tls.ca_fingerprint().as_str())
     }
 
     pub fn is_revoked(&self, device_id: &str) -> bool {

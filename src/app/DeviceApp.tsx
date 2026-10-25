@@ -150,7 +150,7 @@ export function DeviceApp({ me }: { me: Me }) {
           subtitle={`已连接到「${me.host_name}」${me.can_write ? "" : " · 文件只读"}`}
           onClose={() => setMenu(false)}
           actions={[
-            { label: "去掉「不安全」提示（安装证书）", icon: "shield", onSelect: () => navigate("cert") },
+            { label: "安装电脑的证书", icon: "shield", onSelect: () => navigate("cert") },
             { label: "解除配对", icon: "x", danger: true, onSelect: () => void unpair() },
           ]}
         />

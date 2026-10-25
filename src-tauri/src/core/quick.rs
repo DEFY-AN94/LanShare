@@ -117,9 +117,10 @@ pub fn copy_latest_received(state: &Shared) -> Result<String, String> {
     Ok(state.db.device(&msg.device_id).ok().flatten().map(|d| d.name).unwrap_or_default())
 }
 
-/// Paired devices (id, name), the most recent conversation first.
+/// Paired devices that can be reached (id, name), the most recent
+/// conversation first; one that must pair again is left out.
 pub fn recent_devices(state: &Shared) -> Vec<(String, String)> {
-    state.db.devices_by_recent().unwrap_or_else(|e| {
+    state.db.devices_by_recent(&state.tls.ca_fingerprint()).unwrap_or_else(|e| {
         tracing::warn!("could not list devices: {e}");
         Vec::new()
     })
@@ -255,7 +256,11 @@ fn picture_name() -> String {
 /// and the (last) message.
 pub async fn send_clipboard(state: &Shared, device_id: Option<&str>) -> Result<(String, MessageOut), String> {
     let (id, name) = match device_id {
-        Some(id) => state.db.device(id).ok().flatten().map(|d| (d.id, d.name)).ok_or("这台设备已经不在了")?,
+        Some(id) => match state.db.device(id).ok().flatten() {
+            Some(d) if state.needs_repair(&d) => return Err(chat::NEEDS_REPAIR.into()),
+            Some(d) => (d.id, d.name),
+            None => return Err("这台设备已经不在了".into()),
+        },
         None => clipboard_target(state).ok_or("还没有配对的设备")?,
     };
     let bridge = state.bridge.clone();

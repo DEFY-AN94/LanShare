@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER,
   -- The computer has read this device's messages up to this id (unread counts).
-  read_through INTEGER NOT NULL DEFAULT 0
+  read_through INTEGER NOT NULL DEFAULT 0,
+  -- SHA-256 of the root certificate the device paired under: once the
+  -- computer has another one, the device must pair again.
+  ca_fingerprint TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +72,8 @@ pub struct DeviceRow {
     pub can_write: bool,
     pub created_at: i64,
     pub last_seen_at: Option<i64>,
+    /// See the `devices` table.
+    pub ca_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,7 +115,7 @@ pub struct Db {
     conn: Mutex<Connection>,
 }
 
-const DEVICE_COLS: &str = "id, name, token_hash, can_write, created_at, last_seen_at";
+const DEVICE_COLS: &str = "id, name, token_hash, can_write, created_at, last_seen_at, ca_fingerprint";
 const MESSAGE_COLS: &str = "id, device_id, from_host, client_id, kind, text, file_path, file_name, file_size, mime, created_at, file_root, file_created";
 
 fn device_from(row: &Row) -> rusqlite::Result<DeviceRow> {
@@ -121,6 +126,7 @@ fn device_from(row: &Row) -> rusqlite::Result<DeviceRow> {
         can_write: row.get::<_, i64>(3)? != 0,
         created_at: row.get(4)?,
         last_seen_at: row.get(5)?,
+        ca_fingerprint: row.get(6)?,
     })
 }
 
@@ -172,6 +178,11 @@ impl Db {
                  UPDATE devices SET read_through = (SELECT COALESCE(MAX(id), 0) FROM messages);",
             )?;
         }
+        let has_ca: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'ca_fingerprint'", [], |r| r.get(0))?;
+        if has_ca == 0 {
+            // Filled in by `adopt_ca` once the certificates are loaded.
+            conn.execute_batch("ALTER TABLE devices ADD COLUMN ca_fingerprint TEXT;")?;
+        }
         // Upgrades (and any start): the folders that attachments remember held chat files.
         conn.execute(
             "INSERT OR IGNORE INTO chat_roots (root, added_at) SELECT DISTINCT file_root, ?1 FROM messages WHERE file_root IS NOT NULL",
@@ -207,9 +218,16 @@ impl Db {
 
     pub fn insert_device(&self, d: &DeviceRow) -> Result<()> {
         self.conn().execute(
-            &format!("INSERT INTO devices ({DEVICE_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
-            params![d.id, d.name, d.token_hash, d.can_write as i64, d.created_at, d.last_seen_at],
+            &format!("INSERT INTO devices ({DEVICE_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
+            params![d.id, d.name, d.token_hash, d.can_write as i64, d.created_at, d.last_seen_at, d.ca_fingerprint],
         )?;
+        Ok(())
+    }
+
+    /// Devices paired before devices remembered their root certificate
+    /// count as paired under the current one.
+    pub fn adopt_ca(&self, fingerprint: &str) -> Result<()> {
+        self.conn().execute("UPDATE devices SET ca_fingerprint = ?1 WHERE ca_fingerprint IS NULL", params![fingerprint])?;
         Ok(())
     }
 
@@ -370,13 +388,15 @@ impl Db {
 
     /// Devices (id, name), the one with the most recent message first, then
     /// the newest pairing (the order of the host's conversation list).
-    pub fn devices_by_recent(&self) -> Result<Vec<(String, String)>> {
+    /// Devices paired under the root certificate `ca` (the ones that can
+    /// still be reached), the most recent conversation first.
+    pub fn devices_by_recent(&self, ca: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT d.id, d.name FROM devices d LEFT JOIN messages m ON m.device_id = d.id
+            "SELECT d.id, d.name FROM devices d LEFT JOIN messages m ON m.device_id = d.id WHERE d.ca_fingerprint = ?1
              GROUP BY d.id ORDER BY MAX(m.id) IS NULL, MAX(m.id) DESC, d.created_at DESC",
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map(params![ca], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -519,6 +539,7 @@ mod tests {
             can_write: true,
             created_at: 1,
             last_seen_at: None,
+            ca_fingerprint: Some("ca".into()),
         })
         .unwrap();
     }
@@ -684,6 +705,8 @@ mod tests {
             .unwrap();
         let db = Db::open(&path).unwrap();
         assert_eq!(db.unread_counts().unwrap(), [("d0".to_string(), 0)], "an upgrade starts with nothing unread");
+        assert_eq!(db.device("d0").unwrap().unwrap().ca_fingerprint, None, "until the certificates are loaded");
+        db.adopt_ca("ca").unwrap();
         db.insert_message(&text("d0", None, "after the upgrade")).unwrap();
         assert_eq!(db.unread_counts().unwrap(), [("d0".to_string(), 1)]);
         device(&db, "d1");
@@ -694,7 +717,8 @@ mod tests {
         assert_eq!((row.file_root.as_deref(), row.file_created), (Some("/shared"), Some(42)));
         db.mark_read("d0").unwrap();
         assert!(db.unread_counts().unwrap().contains(&("d0".to_string(), 0)));
-        assert_eq!(db.devices_by_recent().unwrap().iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["d1", "d0"]);
+        assert_eq!(db.devices_by_recent("ca").unwrap().iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["d1", "d0"]);
+        assert!(db.devices_by_recent("another ca").unwrap().is_empty());
     }
 
     #[test]
