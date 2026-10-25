@@ -28,7 +28,7 @@ When you upload from **Photo Library** on the iPhone, iOS converts HEIC photos t
 
 Closing the window keeps LanShare running in the background: in the menu bar and Dock on macOS, and in the notification area (system tray) on Windows. The menu bar or tray icon's menu has **打开 LanShare** (Open LanShare), **暂停共享** (Pause sharing) and **退出 LanShare** (Quit LanShare).
 
-An iPhone with the computer's certificate installed and trusted never shows a certificate warning for LanShare; if one appears, close the page. After **重置证书** (Reset certificate) in Settings, every phone pairs again: delete the old certificate on the iPhone, then go through 添加设备 again. A Home Screen icon keeps the login it had when it was added, so delete it too and add it again from Safari after pairing. Old entries stay in the device list marked **需要重新配对** (Pair again), with their chat history on the computer.
+An iPhone with the computer's certificate installed and trusted never shows a certificate warning for LanShare; if one appears, close the page. After **重置证书** (Reset certificate) in Settings, every phone pairs again: delete the old certificate on the iPhone, then go through 添加设备 again. A Home Screen icon keeps the login it had when it was added, so delete it too and add it again from Safari after pairing. Old entries stay in the device list marked **需要重新配对** (Needs pairing again), with their chat history on the computer.
 
 When the computer cannot be reached (it is asleep, or the iPhone is on another network), the Home Screen app still opens and keeps trying to connect. Texts you send meanwhile wait on the iPhone and arrive once it reconnects, and an unsent draft survives closing the app. Tap a message to copy or delete it; a deleted message disappears on both sides. Deleting a file message keeps the file on the computer unless you choose to move it to the Trash.
 
@@ -70,7 +70,7 @@ npm run headless -- --local-port 53299
 
 The terminal prints the address for the phone and the login address for the desktop UI. After changing the frontend, run `npm run build` again and reload the page; the debug server reads files straight from `dist/`.
 
-A phone keeps one LanShare login per address, whatever the port, so pairing it with this server signs it out of the LanShare app on the same computer. To keep both, open this server by the computer's `.local` name (for example `https://mymac.local:39211`, with the port from the terminal) and pair with the 6-digit code, while the app stays paired by its IP address.
+Safari keeps one LanShare login per address, whatever the port. If the phone uses the installed LanShare on this computer by its IP address, pairing it with this server at that address replaces that login, and the phone has to pair with the installed LanShare again. To keep both, type this server's address with the computer's `.local` name in Safari (for example `https://mymac.local:39211`, with the port from the terminal) and pair with the 6-digit code from this server's desktop UI, since the QR code opens the IP address. Safari warns about the connection there, because this server uses its own test certificate from `.dev-data/`.
 
 ### Tests
 

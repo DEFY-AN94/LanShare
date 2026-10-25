@@ -19,7 +19,7 @@ A test page on the computer covers checks 1 and 3, gives you the two addresses f
 - Nothing about security changes: the page is static and public like the app shell (the pairing page), is served with the same Content Security Policy, and calls only `GET /api/ca`, which is already public. There is no new route, API or app code. The folder picker reads file names inside Safari; nothing is uploaded.
 - The debug build uses your normal LanShare data, the same as `npm run tauri dev`.
 
-`scripts/iphone_check.sh --headless` runs the same page on the headless runner with throwaway data in `.dev-data/iphone-check` (port 39290, its own CA). Use it only to work on the page; Safari warns there.
+`scripts/iphone_check.sh --headless` runs the same page on the headless runner with throwaway data in `.dev-data/iphone-check` (port 39290, its own CA). Use it only to work on the page; Safari warns there. The page itself never pairs the phone; if you do pair the phone with a headless server on this Mac, open that server by the `.local` name so the installed LanShare keeps its login (README, Development).
 
 ## Before you start (Mac, about 3 minutes)
 

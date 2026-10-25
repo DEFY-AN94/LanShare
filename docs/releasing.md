@@ -34,7 +34,7 @@ A release run uses about 7 macOS runner minutes (tests 2, app 4–5) and about 2
 ## Pre-releases and release candidates
 
 - Versions below 1.0.0 are published as pre-releases, because the Windows version has not been tested by hand and neither build is signed with a developer certificate.
-- A tag with a suffix, such as `v0.2.0-rc.1`, builds the version in Cargo.toml (the app reports 0.2.0) and is published as a pre-release with a line at the top saying which commit it was built from. It may point to any branch and needs no notes file, so it can also test a change to the release workflow before it is merged. Delete it when it is no longer needed:
+- A tag with a suffix, such as `v0.2.0-rc.1`, builds the version in Cargo.toml (the app reports 0.2.0) and is published as a pre-release with a line at the top saying which commit it was built from. It may point to any branch and needs no notes file, so it can also test a change to the release workflow before it is merged. Delete it when it is no longer needed (the `v*` tag ruleset covers these tags too: a repository admin turns it off for the delete and back on right after):
 
   ```bash
   gh release delete v0.2.0-rc.1 --cleanup-tag --yes
@@ -46,5 +46,5 @@ A release run uses about 7 macOS runner minutes (tests 2, app 4–5) and about 2
 Nothing is published unless every job passes.
 
 - A job that failed for a transient reason (a runner or network problem): **Re-run failed jobs** on the workflow run.
-- A real problem: fix it on `main`, delete the tag (`git push --delete origin v0.2.0 && git tag -d v0.2.0`) and tag the fixed commit again. Do this only while the release is unpublished. The repository's ruleset for `v*` tags blocks deleting or moving them, so an admin has to turn that ruleset off for this and back on right after.
+- A real problem: fix it on `main`, delete the tag (`git push --delete origin v0.2.0 && git tag -d v0.2.0`) and tag the fixed commit again. Do this only while the release is unpublished. The `v*` tag ruleset blocks deleting a release tag, so a repository admin turns the ruleset off just for the delete and back on as soon as the tag is gone; tagging the fixed commit again works with the ruleset on.
 - A published release that turns out to be broken: mark it as a pre-release or delete it, and publish a new patch version. Do not reuse a version number that may already have been downloaded.
