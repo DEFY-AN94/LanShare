@@ -2,7 +2,7 @@
 
 > A messaging and file-transfer tool for iPhone ↔ computer (macOS / Windows) on the local network. LAN only; nothing goes through any cloud.
 >
-> Document date: 2026-10-22 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 done (PR #4); 15-minute iPhone check passed 2026-10-20; M7 accepted on a real iPhone 2026-10-21 and released as v0.2.0 (PR #7, with #8 and #9; see 4.1.3); M8 accepted on the Mac 2026-10-22, merged (PR #11) and **released as v0.3.0**; next: M9 (see section 12); from M8 on, milestones are accepted in the iOS Simulator and real-iPhone checks wait for one pass at the end · "LanShare" is a working name and can be changed
+> Document date: 2026-10-22 · Status: Mac MVP complete (M0–M5, branch `mac-mvp`; for M5 acceptance testing on a real device, see 4.1.1); M6 (Windows) merged into `main` (PR #1); CI still builds and tests every Windows change, and hands-on Windows testing waits until a Windows PC is available; M6.1 done (PR #4); 15-minute iPhone check passed 2026-10-20; M7 accepted on a real iPhone 2026-10-21 and released as v0.2.0 (PR #7, with #8 and #9; see 4.1.3); M8 accepted on the Mac 2026-10-22, merged (PR #11) and released as v0.3.0; the security hardening after the repository went public (five PRs, see 7.2) **released as v0.3.1**; next: M9 (see section 12); from M8 on, milestones are accepted in the iOS Simulator and real-iPhone checks wait for one pass at the end · "LanShare" is a working name and can be changed
 
 ## 1. Goals and scope
 

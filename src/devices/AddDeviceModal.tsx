@@ -145,7 +145,7 @@ function CertStep(props: { setup: CertSetup; current: PairingUrl; onIp: (ip: str
         <ol className="steps">
           <li>iPhone 和这台电脑连同一个 Wi-Fi，用相机扫描二维码，在 Safari 中打开</li>
           <li>
-            还没配对过的 iPhone 打开时，Safari 会先提示「此连接非私人连接」。这个页面只提供证书，这时可以在这一页继续访问；真正防冒充的是下一步核对指纹。已经配对过的 iPhone 请改在手机上 LanShare 右上角菜单里点「安装电脑的证书」
+            还没配对过、或者需要重新配对的 iPhone 打开时，Safari 会先提示「此连接非私人连接」。这个页面只提供证书，这时可以在这一页继续访问；真正防冒充的是下一步核对指纹。正在正常使用的已配对 iPhone，请改在手机上 LanShare 右上角菜单里点「安装电脑的证书」
           </li>
           <li>按手机页面的步骤下载证书。安装前，核对证书详情里的 SHA-256 和下面完全一致，不一致就不要安装</li>
           <li>

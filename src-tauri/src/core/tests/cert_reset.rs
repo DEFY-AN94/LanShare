@@ -134,6 +134,11 @@ async fn a_root_made_at_the_upgrade_start_is_not_adopted() {
     let e = env_in(dir);
     assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
     assert!(needs_repair(&e, &id).await);
+    // Nor at the start after that, which keeps the new root.
+    let Env { _dir: dir, .. } = e;
+    let e = env_in(dir);
+    assert_eq!(me(&e, &cookie).await, StatusCode::UNAUTHORIZED);
+    assert!(needs_repair(&e, &id).await);
 }
 
 /// A reset that wrote the new root but could not issue the server

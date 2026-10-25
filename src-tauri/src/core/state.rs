@@ -173,11 +173,12 @@ pub type Shared = Arc<AppState>;
 
 /// Devices paired before devices remembered their root certificate (before
 /// v0.3.1) count as paired under the current one, unless this start had to
-/// make a new one: then they must pair again too. Before `AppState::new`.
+/// make a new one: then they must pair again too, and get a root that
+/// matches none, so a later start does not take them in either. Before
+/// `AppState::new`.
 pub fn adopt_devices(db: &Db, tls: &Tls) -> anyhow::Result<()> {
-    if !tls.made_new_ca() {
-        db.adopt_ca(&tls.ca_fingerprint())?;
-    }
+    let root = if tls.made_new_ca() { String::new() } else { tls.ca_fingerprint() };
+    db.adopt_ca(&root)?;
     Ok(())
 }
 
