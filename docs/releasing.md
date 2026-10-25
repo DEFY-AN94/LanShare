@@ -46,5 +46,5 @@ A release run uses about 7 macOS runner minutes (tests 2, app 4–5) and about 2
 Nothing is published unless every job passes.
 
 - A job that failed for a transient reason (a runner or network problem): **Re-run failed jobs** on the workflow run.
-- A real problem: fix it on `main`, delete the tag (`git push --delete origin v0.2.0 && git tag -d v0.2.0`) and tag the fixed commit again. Do this only while the release is unpublished.
+- A real problem: fix it on `main`, delete the tag (`git push --delete origin v0.2.0 && git tag -d v0.2.0`) and tag the fixed commit again. Do this only while the release is unpublished. The repository's ruleset for `v*` tags blocks deleting or moving them, so an admin has to turn that ruleset off for this and back on right after.
 - A published release that turns out to be broken: mark it as a pre-release or delete it, and publish a new patch version. Do not reuse a version number that may already have been downloaded.

@@ -70,6 +70,8 @@ npm run headless -- --local-port 53299
 
 The terminal prints the address for the phone and the login address for the desktop UI. After changing the frontend, run `npm run build` again and reload the page; the debug server reads files straight from `dist/`.
 
+A phone keeps one LanShare login per address, whatever the port, so pairing it with this server signs it out of the LanShare app on the same computer. To keep both, open this server by the computer's `.local` name (for example `https://mymac.local:39211`, with the port from the terminal) and pair with the 6-digit code, while the app stays paired by its IP address.
+
 ### Tests
 
 ```bash
