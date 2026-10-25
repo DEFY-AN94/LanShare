@@ -75,7 +75,7 @@ export function DevicesPage() {
               </div>
               <div className="muted small">
                 {d.needs_repair
-                  ? "电脑的证书换过了：在这台手机上删掉旧证书，再点「添加设备」重新配对。聊天记录仍可以在这里查看"
+                  ? "电脑的证书换过了：在这台手机上删掉旧证书，再点「添加设备」重新配对；手机主屏幕上的图标也要删掉，配对后再从 Safari 重新添加。聊天记录仍可以在这里查看"
                   : `${d.online ? "在线" : `最后活动：${formatRelative(d.last_seen_at)}`} · 配对于 ${formatDayTime(d.created_at)}`}
               </div>
             </div>

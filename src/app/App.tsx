@@ -146,7 +146,7 @@ export function App() {
                 <li>手机上的 VPN 可能会拦住局域网连接</li>
                 {hasOfflineCopy() && (
                   <li>
-                    电脑上重置过证书或重装过 LanShare：这台手机要重新配对。先在「设置 › 通用 › VPN 与设备管理」里删掉旧证书，再在电脑上点「添加设备」，按第一步装新证书、扫配对二维码
+                    电脑上重置过证书或重装过 LanShare：这台手机要重新配对。先在「设置 › 通用 › VPN 与设备管理」里删掉旧证书，再在电脑上点「添加设备」，按第一步装新证书、扫配对二维码；主屏幕上的图标也要删掉，配对后再从 Safari 重新添加
                   </li>
                 )}
               </ul>
@@ -160,6 +160,7 @@ export function App() {
                 <button className="btn btn-block" onClick={openFromComputer}>
                   从电脑重新加载
                 </button>
+                <p className="muted small">电脑开着、手机和电脑连着同一个 Wi-Fi 时再点；如果停在 Safari 的错误页，从多任务界面关掉 App 再打开。</p>
                 <p className="muted small">
                   装好并信任了电脑证书的手机不会出现证书警告；如果 Safari 提示「此连接非私人连接」，请关掉页面，不要继续访问。配对时跳过了证书的手机每次都会看到这个提示：只在你信任的 Wi-Fi 上继续，进去后在右上角菜单里安装电脑的证书。
                 </p>
