@@ -7,6 +7,7 @@ import { useToast } from "../components/Toast";
 import { copyText } from "../lib/clipboard";
 import { formatDayTime } from "../lib/format";
 import type { Message } from "../lib/types";
+import { useDropZone } from "../lib/useDropZone";
 import { Composer } from "./Composer";
 import { MessageBubble, PendingBubble } from "./MessageBubble";
 import { deleteMessage, keyFor } from "./store";
@@ -36,7 +37,6 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const restore = useRef<{ height: number; top: number; firstId: number } | null>(null);
-  const [dragging, setDragging] = useState(false);
   const [sharing, setSharing] = useState<Message | null>(null);
   const { open: openFile, download: downloadFile, element: fileOpener } = useFileOpener();
   const onOpenFile = useCallback(
@@ -114,6 +114,8 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
     stickToBottom.current = true;
     conv.sendFiles(files);
   };
+  const drop = useDropZone(!disabled, sendFiles);
+  const { dragging } = drop;
 
   const mine = (m: Message) => (isHost ? m.from_host : !m.from_host);
 
@@ -155,21 +157,7 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
   return (
     <div
       className={`chat ${dragging ? "is-dragging" : ""}`}
-      onDragOver={(e) => {
-        if (disabled || !e.dataTransfer.types.includes("Files")) return;
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-        setDragging(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        const files = Array.from(e.dataTransfer.files);
-        if (files.length && !disabled) sendFiles(files);
-      }}
+      {...drop.handlers}
     >
       {header}
       <div className="chat-list" ref={listRef} onScroll={onScroll}>

@@ -13,6 +13,7 @@ import { canShareFiles, hostOpen, hostReveal } from "../lib/fileActions";
 import { fileCategory, formatBytes, formatShort, formatSpeed } from "../lib/format";
 import { loadLocal, saveLocal } from "../lib/storage";
 import type { DirListing, FileEntry } from "../lib/types";
+import { useDropZone } from "../lib/useDropZone";
 import { openPicker } from "../lib/wakeLock";
 import { uploads, useUploads } from "./uploads";
 
@@ -47,7 +48,6 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   const [loading, setLoading] = useState(true);
   const [menuFor, setMenuFor] = useState<FileEntry | null>(null);
   const [sharing, setSharing] = useState<FileEntry | null>(null);
-  const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const photoTip = usePhotoTip(() => openPicker(fileInput.current));
   const opener = useFileOpener();
@@ -113,6 +113,8 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   }, [load]);
 
   const canWrite = !!listing?.can_write && !disabled;
+  const drop = useDropZone(canWrite, (files) => uploads.add(files, path));
+  const { dragging } = drop;
   const segments = path ? path.split("/") : [];
   const run = async (p: Promise<unknown>, okText?: string) => {
     try {
@@ -179,21 +181,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   return (
     <div
       className={`files ${dragging ? "is-dragging" : ""}`}
-      onDragOver={(e) => {
-        if (!canWrite || !e.dataTransfer.types.includes("Files")) return;
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-        setDragging(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        const files = Array.from(e.dataTransfer.files);
-        if (files.length && canWrite) uploads.add(files, path);
-      }}
+      {...drop.handlers}
     >
       <div className="files-toolbar">
         <nav className="crumbs" aria-label="路径">
