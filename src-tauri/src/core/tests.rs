@@ -244,6 +244,21 @@ async fn files_and_sandbox() {
     assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], "sandbox");
     assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
 
+    // Audio and video play: the browser's player fetches them again by Range
+    // from their own origin, with the cookie, so they are not sandboxed.
+    for (name, mime) in [("clip.mp4", "video/mp4"), ("voice.m4a", "audio/mp4")] {
+        send(&e.lan, up("", name, b"media")).await;
+        let r = send(&e.lan, dev_req(Method::GET, &format!("/api/files/download?path={name}&inline=1"), Some(&cookie), Body::empty(), false)).await;
+        assert_eq!(r.headers[header::CONTENT_TYPE], mime, "{name}");
+        assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], "default-src 'none'; media-src 'self'", "{name}");
+        assert_eq!(r.headers[header::CONTENT_DISPOSITION].to_str().unwrap().split(';').next(), Some("inline"), "{name}");
+    }
+    // PDFs neither: the browser's PDF viewer breaks under `sandbox`.
+    send(&e.lan, up("", "doc.pdf", b"%PDF-1.4")).await;
+    let r = send(&e.lan, dev_req(Method::GET, "/api/files/download?path=doc.pdf&inline=1", Some(&cookie), Body::empty(), false)).await;
+    assert_eq!(r.headers[header::CONTENT_TYPE], "application/pdf");
+    assert!(r.headers.get(header::CONTENT_SECURITY_POLICY).is_none());
+
     // Read-only devices cannot write.
     let device = send(&e.local, host_req(Method::GET, "/api/host/devices", None)).await.json()[0]["id"].as_str().unwrap().to_string();
     send(&e.local, host_req(Method::PATCH, &format!("/api/host/devices/{device}"), Some(json!({"can_write": false})))).await;

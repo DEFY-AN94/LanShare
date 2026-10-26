@@ -160,6 +160,11 @@ printf '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>' > "$T/x.svg
 curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/x.svg" "$PHONE/api/files/upload?dir=&name=x.svg"
 SVG=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=x.svg&inline=1")
 contains "svg is only offered as a download" "$SVG" 'content-disposition: attachment'
+printf 'media' > "$T/v.m4a"
+curl "${D[@]}" "${X[@]}" -o /dev/null --data-binary @"$T/v.m4a" "$PHONE/api/files/upload?dir=&name=v.m4a"
+M4A=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/api/files/download?path=v.m4a&inline=1")
+contains "m4a served as audio/mp4" "$M4A" 'content-type: audio/mp4'
+contains "media lets in only itself" "$M4A" "content-security-policy: default-src 'none'; media-src 'self'"
 PAGE=$(curl "${D[@]}" -D - -o /dev/null "$PHONE/")
 contains "page has CSP" "$PAGE" "content-security-policy: default-src 'self'"
 contains "page denies framing" "$PAGE" 'x-frame-options: DENY'
