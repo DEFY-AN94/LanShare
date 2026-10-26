@@ -518,6 +518,91 @@ h2 {
   z-index: 10;
 }
 
+/* ---------- file viewer (Home Screen app) ---------- */
+/* Below .modal-backdrop, so the save sheet opens over it. */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  animation: fade-in 0.15s;
+}
+/* The bars reach under the status bar, the home indicator and, in landscape,
+   the Dynamic Island, but keep their content clear of them. */
+.viewer-bar,
+.viewer-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(16px + env(safe-area-inset-left, 0px));
+  background: var(--surface);
+}
+.viewer-bar {
+  padding-top: calc(var(--safe-top) + 8px);
+  border-bottom: 1px solid var(--border);
+}
+.viewer-foot {
+  justify-content: center;
+  padding-bottom: calc(var(--safe-bottom) + 8px);
+  border-top: 1px solid var(--border);
+}
+/* The only way out, so a full-size target. */
+.viewer-close {
+  min-height: 44px;
+  min-width: 64px;
+}
+.viewer-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+.viewer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+}
+.viewer-body img,
+.viewer-body video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.viewer-body audio {
+  width: calc(100% - 32px);
+}
+.viewer-body.is-text {
+  display: block;
+}
+.viewer-text {
+  margin: 0;
+  padding: 12px 16px;
+  font: 13px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.viewer-cut,
+.viewer-note {
+  color: var(--muted);
+  font-size: 14px;
+}
+.viewer-cut {
+  padding: 10px 16px 0;
+}
+.viewer-note {
+  padding: 24px;
+  text-align: center;
+  line-height: 1.5;
+}
+
 /* ---------- host (desktop window) ---------- */
 .host {
   display: flex;

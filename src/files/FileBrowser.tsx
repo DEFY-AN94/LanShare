@@ -3,15 +3,17 @@ import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
 import { usePhotoTip } from "../components/PhotoTip";
+import { useFileOpener, type FileTarget } from "../components/FileViewer";
 import { ShareSheet } from "../components/ShareSheet";
 import { useToast } from "../components/Toast";
 import { fileIcon } from "../chat/MessageBubble";
 import { api, qs } from "../lib/api";
 import { events } from "../lib/events";
-import { browserDownload, browserPreview, canShareFiles, hostOpen, hostReveal } from "../lib/fileActions";
-import { fileCategory, formatBytes, formatShort, formatSpeed, isPreviewable } from "../lib/format";
+import { canShareFiles, hostOpen, hostReveal } from "../lib/fileActions";
+import { fileCategory, formatBytes, formatShort, formatSpeed } from "../lib/format";
 import { loadLocal, saveLocal } from "../lib/storage";
 import type { DirListing, FileEntry } from "../lib/types";
+import { useDropZone } from "../lib/useDropZone";
 import { openPicker } from "../lib/wakeLock";
 import { uploads, useUploads } from "./uploads";
 
@@ -37,7 +39,8 @@ interface Props {
   onNavigate: (path: string) => void;
 }
 
-const downloadUrl = (path: string, inline = false) => `/api/files/download${qs({ path, inline: inline ? 1 : undefined })}`;
+const downloadUrl = (path: string) => `/api/files/download${qs({ path })}`;
+const target = (e: FileEntry): FileTarget => ({ url: downloadUrl(e.path), name: e.name, size: e.size });
 
 export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   const [listing, setListing] = useState<DirListing | null>(null);
@@ -45,9 +48,9 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   const [loading, setLoading] = useState(true);
   const [menuFor, setMenuFor] = useState<FileEntry | null>(null);
   const [sharing, setSharing] = useState<FileEntry | null>(null);
-  const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const photoTip = usePhotoTip(() => openPicker(fileInput.current));
+  const opener = useFileOpener();
   const toast = useToast();
   const dialog = useDialog();
   const pathRef = useRef(path);
@@ -110,6 +113,8 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   }, [load]);
 
   const canWrite = !!listing?.can_write && !disabled;
+  const drop = useDropZone(canWrite, (files) => uploads.add(files, path));
+  const { dragging } = drop;
   const segments = path ? path.split("/") : [];
   const run = async (p: Promise<unknown>, okText?: string) => {
     try {
@@ -123,8 +128,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   const openEntry = (e: FileEntry) => {
     if (e.is_dir) return onNavigate(e.path);
     if (isHost) return void run(hostOpen(e.path, (m) => toast(m)));
-    if (isPreviewable(e.name)) browserPreview(downloadUrl(e.path, true));
-    else browserDownload(downloadUrl(e.path), e.name);
+    opener.open(target(e));
   };
 
   const rename = async (e: FileEntry) => {
@@ -160,8 +164,8 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
     } else if (isHost) {
       list.push({ label: "用默认程序打开", icon: "external", onSelect: () => void run(hostOpen(e.path, (m) => toast(m))) });
     } else {
-      if (isPreviewable(e.name)) list.push({ label: "预览", icon: "external", onSelect: () => browserPreview(downloadUrl(e.path, true)) });
-      list.push({ label: "下载到「文件」", icon: "download", onSelect: () => browserDownload(downloadUrl(e.path), e.name) });
+      if (opener.canPreview(e.name)) list.push({ label: "预览", icon: "external", onSelect: () => opener.preview(target(e)) });
+      list.push({ label: "下载到「文件」", icon: "download", onSelect: () => opener.download(target(e)) });
       if (canShareFiles() && /^(image|video)$/.test(fileCategory(e.name))) {
         list.push({ label: "存储到相册 / 分享", icon: "image", onSelect: () => setSharing(e) });
       }
@@ -177,21 +181,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
   return (
     <div
       className={`files ${dragging ? "is-dragging" : ""}`}
-      onDragOver={(e) => {
-        if (!canWrite || !e.dataTransfer.types.includes("Files")) return;
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-        setDragging(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        const files = Array.from(e.dataTransfer.files);
-        if (files.length && canWrite) uploads.add(files, path);
-      }}
+      {...drop.handlers}
     >
       <div className="files-toolbar">
         <nav className="crumbs" aria-label="路径">
@@ -310,6 +300,7 @@ export function FileBrowser({ path, isHost, disabled, onNavigate }: Props) {
 
       <UploadPanel />
       {photoTip.element}
+      {opener.element}
       {dragging && <div className="drop-overlay">松开即可上传到「{segments[segments.length - 1] ?? "共享文件夹"}」</div>}
       {menuFor && (
         <ActionSheet

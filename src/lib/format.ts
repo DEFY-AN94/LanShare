@@ -120,6 +120,32 @@ export function isPreviewable(name: string): boolean {
   return c === "video" || c === "audio" || c === "pdf" || c === "text";
 }
 
+export type ViewKind = "image" | "video" | "audio" | "text";
+
+/** What the Home Screen app's own viewer shows; anything else (a PDF too) is saved to Files instead. */
+export function viewKind(name: string): ViewKind | null {
+  if (!isPreviewable(name)) return null;
+  const c = fileCategory(name);
+  return c === "image" || c === "video" || c === "audio" || c === "text" ? c : null;
+}
+
+/**
+ * Text from either computer: UTF-8, UTF-16 with a byte order mark, or else
+ * GB18030 (Chinese text saved on Windows). The server labels all text as
+ * UTF-8, so the bytes decide. `cut` says the bytes stop mid-file, where a
+ * character may be split; it is left out rather than shown as an error.
+ */
+export function decodeText(bytes: Uint8Array, cut = false): string {
+  const opts = { stream: cut };
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes, opts);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes, opts);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes, opts);
+  } catch {
+    return new TextDecoder("gb18030").decode(bytes, opts);
+  }
+}
+
 /** Images we render as <img> thumbnails in chat (HEIC works in Safari, not in Chromium). */
 export function isInlineImage(name: string): boolean {
   return /\.(jpe?g|png|gif|webp|bmp|avif|heic|heif)$/i.test(name);

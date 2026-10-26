@@ -17,7 +17,8 @@ export function onUnauthorized(fn: () => void): () => void {
   return () => unauthorizedListeners.delete(fn);
 }
 
-async function errorMessage(res: Response): Promise<string> {
+/** The server's own message for a failed response, if it sent one. */
+export async function errorMessage(res: Response): Promise<string> {
   try {
     const body = await res.json();
     if (body && typeof body.error === "string") return body.error;

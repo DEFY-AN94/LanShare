@@ -2,8 +2,8 @@ import { memo, useState, type MouseEvent } from "react";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { copyText } from "../lib/clipboard";
-import { browserDownload, browserPreview, canShareFiles, hostOpenMessageFile, hostOpenUrl, hostRevealMessageFile } from "../lib/fileActions";
-import { fileCategory, formatBytes, formatDayTime, isInlineImage, isPreviewable, splitLinks } from "../lib/format";
+import { canShareFiles, hostOpenMessageFile, hostOpenUrl, hostRevealMessageFile } from "../lib/fileActions";
+import { fileCategory, formatBytes, formatDayTime, isInlineImage, splitLinks } from "../lib/format";
 import type { Message } from "../lib/types";
 import type { PendingMessage } from "./useConversation";
 
@@ -80,6 +80,8 @@ interface BubbleProps {
   isHost: boolean;
   onMediaLoad: () => void;
   onShare: (m: Message) => void;
+  /** A phone opening the attachment: its preview, or a download when `download` is set or it has none. */
+  onOpenFile: (m: Message, download: boolean) => void;
   /** Opens the message's actions (copy, delete). */
   onActions: (m: Message) => void;
 }
@@ -90,7 +92,7 @@ function tapOpensActions(e: MouseEvent): boolean {
   return !window.getSelection()?.toString();
 }
 
-export const MessageBubble = memo(function MessageBubble({ message: m, mine, isHost, onMediaLoad, onShare, onActions }: BubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message: m, mine, isHost, onMediaLoad, onShare, onOpenFile, onActions }: BubbleProps) {
   const toast = useToast();
   const [imgFailed, setImgFailed] = useState(false);
   const title = formatDayTime(m.created_at);
@@ -117,8 +119,7 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
   const open = () => {
     if (!file.exists) return toast("文件已被移动或删除", "error");
     if (isHost) return void run(hostOpenMessageFile(m.id, (msg) => toast(msg)));
-    if (isPreviewable(file.name)) browserPreview(`${url}?inline=1`);
-    else browserDownload(url, file.name);
+    onOpenFile(m, false);
   };
 
   return (
@@ -147,7 +148,7 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
               </button>
             ) : (
               <>
-                <button className="link-btn" onClick={() => browserDownload(url, file.name)}>
+                <button className="link-btn" onClick={() => onOpenFile(m, true)}>
                   下载
                 </button>
                 {canShareFiles() && /^(image|video)$/.test(fileCategory(file.name)) && (

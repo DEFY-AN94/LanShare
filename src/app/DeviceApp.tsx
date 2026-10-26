@@ -10,6 +10,7 @@ import { useToast } from "../components/Toast";
 import { FileBrowser } from "../files/FileBrowser";
 import { api } from "../lib/api";
 import { events, type ConnState } from "../lib/events";
+import { isStandalone } from "../lib/fileActions";
 import { navigate, replaceRoute, useHashRoute } from "../lib/route";
 import { clearConversationData } from "../lib/storage";
 import type { Me, Message } from "../lib/types";
@@ -46,8 +47,7 @@ export function DeviceApp({ me }: { me: Me }) {
 
   // In the Home Screen app, ask iOS not to clear drafts and unsent messages when space runs low.
   useEffect(() => {
-    const standalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone;
-    if (standalone) void navigator.storage?.persist?.().catch(() => undefined);
+    if (isStandalone()) void navigator.storage?.persist?.().catch(() => undefined);
   }, []);
 
   useEffect(

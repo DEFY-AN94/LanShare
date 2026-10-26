@@ -2,6 +2,7 @@
 // because the desktop WebView does not implement them consistently.
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useBackdropClose } from "../lib/useBackdropClose";
 
 interface ConfirmOptions {
   title: string;
@@ -87,9 +88,10 @@ function DialogView({ pending, onClose }: { pending: Pending; onClose: (v: boole
   const isPrompt = pending.type === "prompt";
   const danger = pending.type === "confirm" && pending.opts.danger;
   const submit = () => onClose(isPrompt ? value.trim() || null : true);
+  const backdrop = useBackdropClose(() => onClose(isPrompt ? null : false));
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose(isPrompt ? null : false)}>
+    <div className="modal-backdrop" {...backdrop}>
       <form
         className="modal dialog"
         role="dialog"

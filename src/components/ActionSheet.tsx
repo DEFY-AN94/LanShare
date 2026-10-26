@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Icon } from "./Icon";
+import { useBackdropClose } from "../lib/useBackdropClose";
 
 export interface SheetAction {
   label: string;
@@ -17,6 +18,7 @@ interface Props {
 
 /** Bottom sheet on phones, small centered menu on desktop (see .sheet in CSS). */
 export function ActionSheet({ title, subtitle, actions, onClose }: Props) {
+  const backdrop = useBackdropClose(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -24,7 +26,7 @@ export function ActionSheet({ title, subtitle, actions, onClose }: Props) {
   }, [onClose]);
 
   return (
-    <div className="modal-backdrop sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop sheet-backdrop" {...backdrop}>
       <div className="sheet" role="menu">
         {(title || subtitle) && (
           <div className="sheet-header">

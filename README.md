@@ -32,6 +32,8 @@ An iPhone with the computer's certificate installed and trusted never shows a ce
 
 When the computer cannot be reached (it is asleep, or the iPhone is on another network), the Home Screen app still opens and keeps trying to connect. Texts you send meanwhile wait on the iPhone and arrive once it reconnects, and an unsent draft survives closing the app. Tap a message to copy or delete it; a deleted message disappears on both sides. Deleting a file message keeps the file on the computer unless you choose to move it to the Trash.
 
+In the Home Screen app, images, videos, audio and text files open in LanShare's own viewer; tap **关闭** (Close) to go back. **下载到「文件」** (Download to Files) opens the share sheet, where you choose **Save to Files**. Files up to 200 MB can be saved this way, because the share sheet needs the whole file in the iPhone's memory; download larger ones in Safari. In Safari, previews open in a new tab and downloads go to Safari's downloads, as before.
+
 While an upload runs, the iPhone's screen stays on and the computer does not go to sleep. An upload that would leave too little free space on the computer is refused, and the iPhone shows the numbers: LanShare always leaves 5% of the disk free, at least 2 GB and at most 20 GB.
 
 Settings › **启动** (Startup) can start LanShare when you log in to the Mac (or to Windows), hidden in the menu bar or tray. It is off by default, and LanShare suggests it once after your first pairing. macOS lists it under System Settings › General › Login Items.

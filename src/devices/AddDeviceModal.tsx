@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { events } from "../lib/events";
 import { fingerprintRows } from "../lib/format";
 import type { CertSetup, PairingSession, PairingUrl } from "../lib/types";
+import { useBackdropClose } from "../lib/useBackdropClose";
 
 /**
  * 添加设备 in two steps: install this computer's root certificate on the
@@ -69,12 +70,13 @@ export function AddDeviceModal({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const backdrop = useBackdropClose(onClose);
   const urls = (step === "cert" ? setup?.urls : session?.urls) ?? [];
   const current = urls.find((u) => u.ip === ip) ?? urls[0];
   const warning = setup?.network_warning ?? session?.network_warning;
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop" {...backdrop}>
       <div className="modal add-device" role="dialog" aria-modal="true">
         <div className="modal-head">
           <h2>添加设备</h2>
