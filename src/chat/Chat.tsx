@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { useDialog } from "../components/Dialog";
+import { useFileOpener } from "../components/FileViewer";
 import { ShareSheet } from "../components/ShareSheet";
 import { useToast } from "../components/Toast";
 import { copyText } from "../lib/clipboard";
@@ -37,6 +38,16 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
   const restore = useRef<{ height: number; top: number; firstId: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sharing, setSharing] = useState<Message | null>(null);
+  const { open: openFile, download: downloadFile, element: fileOpener } = useFileOpener();
+  const onOpenFile = useCallback(
+    (m: Message, download: boolean) => {
+      if (!m.file) return;
+      const t = { url: `/api/messages/${m.id}/file`, name: m.file.name, size: m.file.size, mime: m.file.mime };
+      if (download) downloadFile(t);
+      else openFile(t);
+    },
+    [openFile, downloadFile],
+  );
   const dialog = useDialog();
 
   useEffect(() => {
@@ -170,7 +181,7 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
           return (
             <Fragment key={m.id}>
               {showTime && <div className="chat-time">{formatDayTime(m.created_at)}</div>}
-              <MessageBubble message={m} mine={mine(m)} isHost={isHost} onMediaLoad={scrollToBottom} onShare={setSharing} onActions={setActionFor} />
+              <MessageBubble message={m} mine={mine(m)} isHost={isHost} onMediaLoad={scrollToBottom} onShare={setSharing} onOpenFile={onOpenFile} onActions={setActionFor} />
             </Fragment>
           );
         })}
@@ -189,6 +200,7 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
       />
       {dragging && <div className="drop-overlay">松开即可发送文件</div>}
       {actionFor && <ActionSheet actions={actionsFor(actionFor)} onClose={() => setActionFor(null)} />}
+      {fileOpener}
       {sharing?.file && (
         <ShareSheet
           url={`/api/messages/${sharing.id}/file`}
