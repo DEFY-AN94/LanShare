@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { fetchAsFile, SHARE_LIMIT } from "../lib/fileActions";
 import { formatBytes } from "../lib/format";
+import { useBackdropClose } from "../lib/useBackdropClose";
 import { useToast } from "./Toast";
 
 interface Props {
@@ -23,6 +24,7 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
   const tooLarge = purpose === "files" && size > SHARE_LIMIT;
+  const backdrop = useBackdropClose(onClose);
 
   useEffect(() => {
     if (tooLarge) return;
@@ -56,7 +58,7 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
   const ready = purpose === "files" ? "已准备好，点「打开分享」后选择「保存到“文件”」。" : "已准备好，点「打开分享」后选择「保存图像」或「保存视频」。";
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop" {...backdrop}>
       <div className="modal dialog" role="dialog" aria-modal="true">
         <h2 className="dialog-title">{purpose === "files" ? "下载到「文件」" : "存储到相册 / 分享"}</h2>
         <div className="dialog-message">

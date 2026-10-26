@@ -3,6 +3,7 @@
 // Verified on a real iPhone (iOS 27): no <input accept> value avoids the conversion.
 
 import { useRef, useState, type ReactNode } from "react";
+import { useBackdropClose } from "../lib/useBackdropClose";
 
 const KEY = "lanshare.photoTipSeen";
 
@@ -36,6 +37,7 @@ export function usePhotoTip(pick: () => void): { open: () => void; element: Reac
   const [visible, setVisible] = useState(false);
   const [dontShow, setDontShow] = useState(true);
   const pickRef = useRef(pick);
+  const backdrop = useBackdropClose(() => setVisible(false));
   pickRef.current = pick;
 
   const open = () => {
@@ -50,7 +52,7 @@ export function usePhotoTip(pick: () => void): { open: () => void; element: Reac
   };
 
   const element = visible ? (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setVisible(false)}>
+    <div className="modal-backdrop" {...backdrop}>
       <div className="modal dialog photo-tip" role="dialog" aria-modal="true">
         <h2 className="dialog-title">从 iPhone 上传照片和视频</h2>
         <ul className="tip-list">
