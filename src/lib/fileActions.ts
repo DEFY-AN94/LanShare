@@ -67,12 +67,21 @@ export function inlineUrl(url: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}inline=1`;
 }
 
+/** A dropped connection rejects with WebKit's own English text ("Load failed"); this says it in the UI's words. */
+function connectionLost(e: unknown): unknown {
+  return e instanceof TypeError ? new Error("连接中断，没能从电脑读完，请再试一次") : e;
+}
+
 /** Downloads into memory so the share sheet can offer "保存图像", "保存视频" or "保存到“文件”". */
 export async function fetchAsFile(url: string, name: string, mime: string, signal?: AbortSignal): Promise<File> {
-  const res = await fetch(url, { credentials: "same-origin", signal });
-  if (!res.ok) throw new Error(`下载失败：${await errorMessage(res)}`);
-  const blob = await res.blob();
-  return new File([blob], name, { type: mime || blob.type || "application/octet-stream" });
+  try {
+    const res = await fetch(url, { credentials: "same-origin", signal });
+    if (!res.ok) throw new Error(`下载失败：${await errorMessage(res)}`);
+    const blob = await res.blob();
+    return new File([blob], name, { type: mime || blob.type || "application/octet-stream" });
+  } catch (e) {
+    throw connectionLost(e);
+  }
 }
 
 /** How much of a text file the viewer shows. */
@@ -80,9 +89,13 @@ export const TEXT_LIMIT = 1024 * 1024;
 
 /** The start of a text file, up to TEXT_LIMIT bytes. */
 export async function fetchTextStart(url: string, signal?: AbortSignal): Promise<Uint8Array> {
-  const res = await fetch(url, { credentials: "same-origin", signal, headers: { Range: `bytes=0-${TEXT_LIMIT - 1}` } });
-  // An empty file has no byte 0 to start from.
-  if (res.status === 416) return new Uint8Array();
-  if (!res.ok) throw new Error(`读取失败：${await errorMessage(res)}`);
-  return new Uint8Array(await res.arrayBuffer()).subarray(0, TEXT_LIMIT);
+  try {
+    const res = await fetch(url, { credentials: "same-origin", signal, headers: { Range: `bytes=0-${TEXT_LIMIT - 1}` } });
+    // An empty file has no byte 0 to start from.
+    if (res.status === 416) return new Uint8Array();
+    if (!res.ok) throw new Error(`读取失败：${await errorMessage(res)}`);
+    return new Uint8Array(await res.arrayBuffer()).subarray(0, TEXT_LIMIT);
+  } catch (e) {
+    throw connectionLost(e);
+  }
 }

@@ -59,7 +59,7 @@ export function usePhotoTip(pick: () => void): { open: () => void; element: Reac
             JPEG。分辨率不变，视频文件可能会变大。
           </li>
           <li>
-            需要<b>原片</b>（原始格式和画质）时：先在「照片」App 里选中，点分享 › <b>存储到「文件」</b>，再回到这里选
+            需要<b>原片</b>（原始格式和画质）时：先在「照片」App 里选中，点分享 › <b>保存到“文件”</b>，再回到这里选
             <b>「选取文件」</b>。
           </li>
           <li>ProRAW（DNG）照片和「文件」里的其他文件不受影响。</li>

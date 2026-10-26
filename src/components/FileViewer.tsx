@@ -78,11 +78,12 @@ function FileViewer({ target, kind, onSave, onClose }: ViewerProps) {
   const [failed, setFailed] = useState(false);
   const src = inlineUrl(target.url);
 
-  // Closing stops playback and the download behind it.
+  // Closing stops playback and the download behind it. The element is still in
+  // the page when StrictMode only rehearses an unmount; then it is left alone.
   useEffect(() => {
     const m = media.current;
     return () => {
-      if (!m) return;
+      if (!m || m.isConnected) return;
       m.pause();
       m.removeAttribute("src");
       m.load();
@@ -110,7 +111,7 @@ function FileViewer({ target, kind, onSave, onClose }: ViewerProps) {
     <div className="viewer" role="dialog" aria-modal="true" aria-label={target.name}>
       <div className="viewer-bar">
         <span className="viewer-title ellipsis">{target.name}</span>
-        <button className="btn btn-small" onClick={onClose}>
+        <button className="btn viewer-close" onClick={onClose}>
           关闭
         </button>
       </div>

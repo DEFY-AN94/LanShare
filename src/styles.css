@@ -527,23 +527,31 @@ h2 {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  padding: var(--safe-top) 0 var(--safe-bottom);
   animation: fade-in 0.15s;
 }
+/* The bars reach under the status bar, the home indicator and, in landscape,
+   the Dynamic Island, but keep their content clear of them. */
 .viewer-bar,
 .viewer-foot {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 12px 8px 16px;
+  padding: 8px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(16px + env(safe-area-inset-left, 0px));
   background: var(--surface);
 }
 .viewer-bar {
+  padding-top: calc(var(--safe-top) + 8px);
   border-bottom: 1px solid var(--border);
 }
 .viewer-foot {
   justify-content: center;
+  padding-bottom: calc(var(--safe-bottom) + 8px);
   border-top: 1px solid var(--border);
+}
+/* The only way out, so a full-size target. */
+.viewer-close {
+  min-height: 44px;
+  min-width: 64px;
 }
 .viewer-title {
   flex: 1;
@@ -558,6 +566,7 @@ h2 {
   justify-content: center;
   overflow: auto;
   overscroll-behavior: contain;
+  padding: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
 }
 .viewer-body img,
 .viewer-body video {
