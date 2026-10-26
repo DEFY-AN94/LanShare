@@ -1,8 +1,8 @@
 [package]
 name = "lanshare"
-version = "0.3.1"
+version = "0.3.2"
 description = "LAN-only messaging and file sharing between your phone and computer"
-authors = ["defyan94"]
+authors = ["DEFY-AN94"]
 edition = "2024"
 default-run = "lanshare"
 
