@@ -63,6 +63,8 @@ pub fn inline_policy(name: &str) -> (bool, Mime) {
     let mime = mime_guess::from_path(name).first_or_octet_stream();
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     match (mime.type_().as_str(), mime.subtype().as_str()) {
+        // mime_guess says audio/m4a, which Safari does not play.
+        _ if ext == "m4a" => (true, "audio/mp4".parse().expect("valid MIME type")),
         ("image", "svg") => (false, mime),
         ("image", _) | ("video", _) | ("audio", _) => (true, mime),
         ("application", "pdf") => (true, mime),
@@ -70,6 +72,9 @@ pub fn inline_policy(name: &str) -> (bool, Mime) {
         _ => (false, mime),
     }
 }
+
+/// Audio and video shown on their own: the file itself and nothing else.
+const MEDIA_CSP: &str = "default-src 'none'; media-src 'self'";
 
 fn clone_head(parts: &Parts, strip_range: bool) -> Request {
     let mut r = Request::new(Body::empty());
@@ -160,9 +165,18 @@ pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_nam
         h.insert(header::CONTENT_DISPOSITION, content_disposition(if inline { "inline" } else { "attachment" }, file_name));
     }
     // A sandboxed document cannot run script or reach our cookies' origin.
-    // PDFs are exempt because browser PDF viewers break under `sandbox`.
-    if mime.subtype() != mime_guess::mime::PDF {
-        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
+    // PDFs are exempt because browser PDF viewers break under `sandbox`. So
+    // are audio and video: the browser's player fetches the file again with
+    // Range requests from the document's own origin, which `sandbox` makes
+    // opaque, so the SameSite=Strict cookie stays behind and every request is
+    // refused. They get a policy that lets in the media and nothing else.
+    let csp = match mime.type_().as_str() {
+        "video" | "audio" => Some(MEDIA_CSP),
+        _ if mime.subtype() == mime_guess::mime::PDF => None,
+        _ => Some("sandbox"),
+    };
+    if let Some(csp) = csp {
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(csp));
     }
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     // No copy stays in a browser cache after unpairing or clearing the chat.
@@ -602,6 +616,7 @@ mod tests {
         assert!(inline_policy("doc.pdf").0);
         assert!(!inline_policy("x.svg").0);
         assert!(!inline_policy("app.exe").0);
+        assert_eq!(inline_policy("voice.M4A"), (true, "audio/mp4".parse().unwrap()));
         // Script-capable text is shown as text/plain, never rendered.
         assert_eq!(inline_policy("page.html"), (true, mime_guess::mime::TEXT_PLAIN_UTF_8));
         assert_eq!(inline_policy("notes.md"), (true, mime_guess::mime::TEXT_PLAIN_UTF_8));

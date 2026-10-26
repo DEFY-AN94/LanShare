@@ -123,6 +123,7 @@ scripts/release_check.sh         checks a release tag against the code (docs/rel
 - The connection drops when LanShare goes to the background or the iPhone locks; missed messages are fetched automatically when you return to LanShare. There are no push notifications on a LAN-only setup.
 - Locking the iPhone during an upload: in testing, a 600 MB video still finished uploading with the screen locked, but iOS may stop an upload if the phone stays locked for a long time, and interrupted uploads cannot be resumed yet.
 - Company, hotel and guest Wi-Fi networks often have "AP isolation" turned on, which stops devices from reaching each other.
+- The computer and the iPhone must be on the same network. A router can keep its networks apart, for example a Wi-Fi 7 network with MLO and the ordinary one, or a guest network: in testing, a Mac on the MLO network and an iPhone on the ordinary one could not reach each other. If the phone cannot connect, put both on the same Wi-Fi network.
 - If the computer's IP address changes, old Home Screen icons stop working. Scan the QR code again.
 - The app is not signed. On another Mac, allow the first launch in System Settings › Privacy & Security by clicking **Open Anyway**.
 
