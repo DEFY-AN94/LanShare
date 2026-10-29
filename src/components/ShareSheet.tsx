@@ -22,6 +22,10 @@ interface Props {
 export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A large file can take a few seconds to reach the share sheet; a second tap
+  // meanwhile would only get refused (share() is already in progress) and show
+  // an error.
+  const [sharing, setSharing] = useState(false);
   const toast = useToast();
   const tooLarge = purpose === "files" && size > SHARE_LIMIT;
   const backdrop = useBackdropClose(onClose);
@@ -37,7 +41,8 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
   }, [url, name, mime, tooLarge]);
 
   const share = async () => {
-    if (!file) return;
+    if (!file || sharing) return;
+    setSharing(true);
     try {
       if (navigator.canShare && !navigator.canShare({ files: [file] })) {
         toast("这个文件类型不支持系统分享", "error");
@@ -46,7 +51,11 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
       await navigator.share({ files: [file] });
       onClose();
     } catch (e) {
-      if ((e as Error).name !== "AbortError") toast("分享失败", "error");
+      // The error's name says why, for example NotAllowedError.
+      const reason = (e as Error)?.name || String(e);
+      if (reason !== "AbortError") toast(`分享失败（${reason}）`, "error");
+    } finally {
+      setSharing(false);
     }
   };
 
@@ -85,7 +94,7 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
               复制地址
             </button>
           ) : (
-            <button className="btn btn-primary" disabled={!file} onClick={share}>
+            <button className="btn btn-primary" disabled={!file || sharing} onClick={share}>
               打开分享
             </button>
           )}
