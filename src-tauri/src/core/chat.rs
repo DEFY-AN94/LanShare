@@ -15,7 +15,7 @@ use super::events::Audience;
 use super::model::MessageOut;
 use super::paths::sanitize_filename;
 use super::state::{INBOX_DIR, SENT_DIR, Shared, created_ms};
-use super::transfer::{preflight, receive_upload, unless_root_gone, upload_length};
+use super::transfer::{is_typescript, preflight, receive_upload, unless_root_gone, upload_length};
 use super::util::now_ms;
 
 pub const MAX_TEXT_CHARS: usize = 100_000;
@@ -152,7 +152,8 @@ pub async fn store_upload(state: &Shared, session: &Session, q: &UploadRequest, 
     let created = std::fs::metadata(&path).ok().as_ref().and_then(created_ms);
     let rel = sandbox.relative(&path).ok_or_else(|| ApiError::internal("upload landed outside the shared folder"))?;
     let final_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
-    let mime = mime_guess::from_path(&final_name).first_or_octet_stream().to_string();
+    let mime = if is_typescript(&final_name, &path) { mime_guess::mime::TEXT_PLAIN_UTF_8 } else { mime_guess::from_path(&final_name).first_or_octet_stream() };
+    let mime = mime.to_string();
     let root = sandbox.root().to_string_lossy().into_owned();
     let (row, is_new) = state
         .db

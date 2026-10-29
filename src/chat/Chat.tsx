@@ -42,7 +42,9 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
   const onOpenFile = useCallback(
     (m: Message, download: boolean) => {
       if (!m.file) return;
-      const t = { url: `/api/messages/${m.id}/file`, name: m.file.name, size: m.file.size, mime: m.file.mime };
+      // No type: a saved file takes the one the computer serves now, which can
+      // differ from the type stored with an older message (a .ts was video).
+      const t = { url: `/api/messages/${m.id}/file`, name: m.file.name, size: m.file.size };
       if (download) downloadFile(t);
       else openFile(t);
     },
@@ -193,7 +195,7 @@ export function Chat({ deviceId, isHost, disabled, disabledText, offline, canTra
         <ShareSheet
           url={`/api/messages/${sharing.id}/file`}
           name={sharing.file.name}
-          mime={sharing.file.mime}
+          mime=""
           size={sharing.file.size}
           onClose={() => setSharing(null)}
         />

@@ -1,5 +1,6 @@
 //! Streaming file transfer: downloads with Range support, uploads straight to disk.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,6 +74,22 @@ pub fn inline_policy(name: &str) -> (bool, Mime) {
     }
 }
 
+/// `.ts` is TypeScript far more often than an MPEG transport stream, which a
+/// phone cannot play on its own anyway. It is text unless the file starts like
+/// a transport stream, with a sync byte at the start of each 188-byte packet.
+pub fn is_typescript(name: &str, path: &Path) -> bool {
+    if !has_ts_extension(name) {
+        return false;
+    }
+    let mut head = Vec::with_capacity(189);
+    let read = std::fs::File::open(path).and_then(|f| f.take(189).read_to_end(&mut head));
+    !(read.is_ok() && head.len() == 189 && head[0] == 0x47 && head[188] == 0x47)
+}
+
+fn has_ts_extension(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("ts"))
+}
+
 /// Audio and video shown on their own: the file itself and nothing else.
 const MEDIA_CSP: &str = "default-src 'none'; media-src 'self'";
 
@@ -129,7 +146,13 @@ fn transfer_stopped() -> ApiError {
 /// Serves `path` (already sandbox-checked) with Range/ETag support. The body
 /// stops mid-way if sharing is paused or the device is removed.
 pub async fn serve_path(state: &Shared, session: &Session, path: &Path, file_name: &str, want_inline: bool, parts: &Parts) -> Response {
-    let (inline_ok, mime) = inline_policy(file_name);
+    // Reading the start of a `.ts` file can wait on a slow or sleeping disk, so
+    // it happens off the async runtime.
+    let typescript = has_ts_extension(file_name) && {
+        let (name, path) = (file_name.to_owned(), path.to_path_buf());
+        tokio::task::spawn_blocking(move || is_typescript(&name, &path)).await.unwrap_or(true)
+    };
+    let (inline_ok, mime) = if typescript { (true, mime_guess::mime::TEXT_PLAIN_UTF_8) } else { inline_policy(file_name) };
     let inline = want_inline && inline_ok;
     let svc = ServeFile::new_with_mime(path, &mime).ignore_multi_range_requests(true);
     let res = match svc.clone().oneshot(clone_head(parts, false)).await {
@@ -620,6 +643,34 @@ mod tests {
         // Script-capable text is shown as text/plain, never rendered.
         assert_eq!(inline_policy("page.html"), (true, mime_guess::mime::TEXT_PLAIN_UTF_8));
         assert_eq!(inline_policy("notes.md"), (true, mime_guess::mime::TEXT_PLAIN_UTF_8));
+    }
+
+    #[test]
+    fn ts_is_text_unless_it_is_a_transport_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("notes.ts");
+        // Longer than the 189 bytes looked at.
+        std::fs::write(&source, "export const greeting: string = \"hello\";\n".repeat(10)).unwrap();
+        assert!(is_typescript("notes.ts", &source));
+        assert!(is_typescript("NOTES.TS", &source));
+        assert!(!is_typescript("notes.txt", &source), "only .ts");
+        let mut packets = vec![0u8; 2 * 188];
+        packets[0] = 0x47;
+        packets[188] = 0x47;
+        let video = dir.path().join("clip.ts");
+        std::fs::write(&video, &packets).unwrap();
+        assert!(!is_typescript("clip.ts", &video));
+        // A sync byte at only one of the two places is not a transport stream.
+        for at in [0, 188] {
+            let mut one = vec![0u8; 2 * 188];
+            one[at] = 0x47;
+            std::fs::write(&video, &one).unwrap();
+            assert!(is_typescript("clip.ts", &video), "sync byte only at {at}");
+        }
+        // One packet is not enough to tell, and a file that cannot be read is text.
+        std::fs::write(&video, &packets[..188]).unwrap();
+        assert!(is_typescript("clip.ts", &video));
+        assert!(is_typescript("gone.ts", &dir.path().join("gone.ts")));
     }
 
     #[test]
