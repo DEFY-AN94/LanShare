@@ -253,6 +253,21 @@ async fn files_and_sandbox() {
         assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], "default-src 'none'; media-src 'self'", "{name}");
         assert_eq!(r.headers[header::CONTENT_DISPOSITION].to_str().unwrap().split(';').next(), Some("inline"), "{name}");
     }
+    // `.ts` is TypeScript unless it starts like an MPEG transport stream. A chat
+    // attachment keeps the same type, which the phone hands to the share sheet.
+    let source = "export const x = 1;\n".repeat(20);
+    send(&e.lan, up("", "notes.ts", Box::leak(source.into_bytes().into_boxed_slice()))).await;
+    let r = send(&e.lan, dev_req(Method::GET, "/api/files/download?path=notes.ts&inline=1", Some(&cookie), Body::empty(), false)).await;
+    assert_eq!(r.headers[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(r.headers[header::CONTENT_SECURITY_POLICY], "sandbox");
+    let m = send(&e.lan, dev_req(Method::POST, "/api/messages/upload?name=notes.ts", Some(&cookie), Body::from(&b"let x = 1;\n"[..]), false)).await.json();
+    assert_eq!(m["file"]["mime"], "text/plain; charset=utf-8");
+    let mut packets = vec![0u8; 2 * 188];
+    packets[0] = 0x47;
+    packets[188] = 0x47;
+    send(&e.lan, up("", "clip.ts", Box::leak(packets.into_boxed_slice()))).await;
+    let r = send(&e.lan, dev_req(Method::GET, "/api/files/download?path=clip.ts&inline=1", Some(&cookie), Body::empty(), false)).await;
+    assert!(r.headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("video/"), "{:?}", r.headers[header::CONTENT_TYPE]);
     // PDFs neither: the browser's PDF viewer breaks under `sandbox`.
     send(&e.lan, up("", "doc.pdf", b"%PDF-1.4")).await;
     let r = send(&e.lan, dev_req(Method::GET, "/api/files/download?path=doc.pdf&inline=1", Some(&cookie), Body::empty(), false)).await;

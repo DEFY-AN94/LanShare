@@ -35,6 +35,12 @@ it("says a dropped connection in Chinese, and leaves a cancel alone", async () =
   await expect(fetchAsFile("/f", "a.zip", "")).rejects.toBe(abort);
 });
 
+it("gives a saved file the type the computer serves unless one is asked for", async () => {
+  vi.stubGlobal("fetch", () => Promise.resolve(new Response("let x = 1;\n", { headers: { "Content-Type": "text/plain; charset=utf-8" } })));
+  expect((await fetchAsFile("/f", "notes.ts", "")).type).toMatch(/^text\/plain/);
+  expect((await fetchAsFile("/f", "clip.mp4", "video/mp4")).type).toBe("video/mp4");
+});
+
 it("passes on the server's reason for a refused download", async () => {
   vi.stubGlobal("fetch", () => Promise.resolve(Response.json({ error: "电脑端已暂停共享" }, { status: 503 })));
   await expect(fetchAsFile("/f", "a.zip", "")).rejects.toThrow("下载失败：电脑端已暂停共享");
