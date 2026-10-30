@@ -33,3 +33,12 @@ This repository is **public**. Anything committed, pushed or written on GitHub (
 - Never push branches, tags or history from another clone or repository into this one.
 - GitHub content (PRs, commits, docs) is written in English; `README.zh-CN.md` is the Chinese README.
 - The app's own rule still holds: logs never contain message text, file names, paths or clipboard content.
+
+## Cloud sessions
+
+Claude Code cloud sessions (Ubuntu) work on a branch of this repository and end with a PR; the steps that need a Mac, an iPhone or a release stay in a local session.
+
+- **Commit identity:** `.claude/hooks/cloud-git-identity.sh` runs at session start and sets `DEFY-AN94` with the noreply address in cloud sessions only. Check `git log -1 --format='%an <%ae>'` before the first push. `.claude/settings.json` leaves the session link out of commits and PR descriptions.
+- **Building:** the environment's setup script installs what Tauri needs on Linux (`libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev file`, plus `rustup component add clippy`). CI only builds on Windows and macOS, so run the CI checks (`npm ci`, `npm run build`, `npm test`, then `cargo clippy --all-targets -- -D warnings` and `cargo test` in `src-tauri`) before changing anything; a Linux-only failure is not a regression.
+- **Pushing:** push only the session's own branch and open a PR. Tags are refused and releases are cut locally (`docs/releasing.md`). `gh pr` does not work through the cloud proxy; use the Create PR button or `gh api`.
+- **Not available in the cloud:** the iOS Simulator, a real iPhone, the Mac app and Windows. A local session does the acceptance checks, the review for personal data before merging, the merge and any release.
