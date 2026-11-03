@@ -170,3 +170,55 @@ it("gives up on a stream still connecting after 6 s, checks the computer and tri
   expect(FakeEventSource.all).toHaveLength(2);
   expect(events.state).toBe("connecting");
 });
+
+it("a stream that opens only on a later attempt asks for what was missed, once", async () => {
+  const { events } = await import("./events");
+  const resync = vi.fn();
+  events.on("resync", resync);
+  events.start();
+  FakeEventSource.all[0].fail();
+  probe.resolve({ status: 200 });
+  await vi.advanceTimersByTimeAsync(1_000);
+  FakeEventSource.all[1].open();
+  expect(events.state).toBe("open");
+  expect(resync).toHaveBeenCalledTimes(1);
+});
+
+it("a first attempt that never opens counts as missed too", async () => {
+  const { events } = await import("./events");
+  const resync = vi.fn();
+  events.on("resync", resync);
+  events.start();
+  await vi.advanceTimersByTimeAsync(6_000);
+  probe.resolve({ status: 200 });
+  await vi.advanceTimersByTimeAsync(1_000);
+  FakeEventSource.all[1].open();
+  expect(resync).toHaveBeenCalledTimes(1);
+});
+
+it("a first attempt replaced before it opened, as when the page is shown again, counts as missed too", async () => {
+  const { events } = await import("./events");
+  const resync = vi.fn();
+  events.on("resync", resync);
+  events.start();
+  // Nothing has arrived on it yet, so a page shown again replaces it.
+  windowListeners.get("pageshow")!();
+  expect(FakeEventSource.all).toHaveLength(2);
+  expect(FakeEventSource.all[0].closed).toBe(true);
+  FakeEventSource.all[1].open();
+  expect(resync).toHaveBeenCalledTimes(1);
+});
+
+it("the first stream that opens at once asks for nothing again", async () => {
+  const { events } = await import("./events");
+  const resync = vi.fn();
+  events.on("resync", resync);
+  events.start();
+  FakeEventSource.all[0].open();
+  expect(resync).not.toHaveBeenCalled();
+  FakeEventSource.all[0].fail();
+  probe.resolve({ status: 200 });
+  await vi.advanceTimersByTimeAsync(1_000);
+  FakeEventSource.all[1].open();
+  expect(resync).toHaveBeenCalledTimes(1);
+});

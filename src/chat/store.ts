@@ -84,6 +84,18 @@ let releaseScreen: (() => void) | null = null;
 let retriesDue = 0;
 /** The outbox entries this page has stored, by client id. */
 const stored = new Map<string, string>();
+/**
+ * Every message up to this id has come in a page of the list. Only pages move
+ * it, never this page's own sends, which can be newer than messages the event
+ * stream missed while it was down: catching up starts here.
+ */
+const syncedThrough = new Map<string, number>();
+/** Deleted on either side; ids are never reused, so a page or reply on its way cannot bring them back. */
+const removed = new Set<number>();
+/** The computer cleared every chat up to this id. */
+let clearedThrough = 0;
+/** The latest automatic cleanup's cutoff (ms), for pages asked for before it came. */
+let prunedBefore = 0;
 
 export const keyFor = (deviceId: string | null) => deviceId ?? SELF;
 
@@ -166,9 +178,10 @@ function droppedElsewhere(client_id: string) {
 function merge(key: string, incoming: Message[]) {
   if (!incoming.length) return;
   const done = new Set(incoming.map((m) => m.client_id).filter(Boolean));
+  const kept = incoming.filter((m) => !removed.has(m.id) && m.id > clearedThrough);
   update(key, (s) => {
     const byId = new Map(s.messages.map((m) => [m.id, m]));
-    for (const m of incoming) byId.set(m.id, m);
+    for (const m of kept) byId.set(m.id, m);
     return {
       ...s,
       messages: [...byId.values()].sort((a, b) => a.id - b.id),
@@ -179,6 +192,7 @@ function merge(key: string, incoming: Message[]) {
 
 function removeMessages(ids: number[]) {
   if (!ids.length) return;
+  for (const id of ids) removed.add(id);
   const gone = new Set(ids);
   for (const key of convs.keys()) {
     const s = getConversation(key);
@@ -233,6 +247,9 @@ function fail(key: string, client_id: string, e: unknown) {
 const listUrl = (key: string, params: Record<string, number | undefined>) =>
   `/api/messages${qs({ device: deviceOf.get(key) ?? undefined, ...params })}`;
 
+/** A page asked for before a cleanup came may still hold what it deleted. */
+const sinceAsked = (seen: number, messages: Message[]) => (seen === prunedBefore ? messages : messages.filter((m) => m.created_at >= prunedBefore));
+
 /** First load of a conversation; later mounts only catch up. */
 export async function ensureLoaded(key: string, deviceId: string | null) {
   ensureSubscribed();
@@ -241,36 +258,46 @@ export async function ensureLoaded(key: string, deviceId: string | null) {
   const s = getConversation(key);
   if (s.loaded) return catchUp(key);
   if (s.loading) return;
-  update(key, (st) => ({ ...st, loading: true }));
-  try {
-    const page = await api.get<MessagePage>(listUrl(key, { limit: PAGE }));
-    // Merge, not replace: SSE may already have delivered newer messages.
-    merge(key, page.messages);
-    update(key, (st) => ({ ...st, hasMore: page.has_more, loaded: true }));
-  } catch (e) {
-    errorHandler?.((e as Error).message);
-  } finally {
-    update(key, (st) => ({ ...st, loading: false }));
-  }
+  await loadFirst(key, true);
   flush();
 }
 
-/** Pages forward from the newest known message, so nothing missed stays missing. */
-async function catchUp(key: string) {
-  const s = getConversation(key);
-  if (!s.loaded) return;
-  let after = s.messages[s.messages.length - 1]?.id;
+/** The newest page. Only the first try says why it failed; later ones come with each reconnect. */
+async function loadFirst(key: string, report: boolean) {
+  update(key, (st) => ({ ...st, loading: true }));
   try {
-    if (after === undefined) {
-      const page = await api.get<MessagePage>(listUrl(key, { limit: PAGE }));
-      merge(key, page.messages);
-      return;
-    }
+    const seen = prunedBefore;
+    const page = await api.get<MessagePage>(listUrl(key, { limit: PAGE }));
+    // Merge, not replace: SSE may already have delivered newer messages.
+    merge(key, sinceAsked(seen, page.messages));
+    syncedThrough.set(key, page.messages[page.messages.length - 1]?.id ?? 0);
+    update(key, (st) => ({ ...st, hasMore: page.has_more, loaded: true }));
+  } catch (e) {
+    if (report) errorHandler?.((e as Error).message);
+  } finally {
+    update(key, (st) => ({ ...st, loading: false }));
+  }
+}
+
+/** A conversation a view asked for: caught up, or loaded if its first load failed. */
+function sync(key: string) {
+  const s = getConversation(key);
+  if (s.loaded) void catchUp(key);
+  else if (!s.loading && deviceOf.has(key)) void loadFirst(key, false);
+}
+
+/** Pages forward from the last page fetched, so nothing missed stays missing. */
+async function catchUp(key: string) {
+  let after = syncedThrough.get(key) ?? 0;
+  try {
     for (;;) {
+      const seen = prunedBefore;
       const page = await api.get<MessagePage>(listUrl(key, { after, limit: CATCH_UP_PAGE }));
-      merge(key, page.messages);
-      if (!page.has_more || !page.messages.length) break;
+      merge(key, sinceAsked(seen, page.messages));
+      if (!page.messages.length) break;
       after = page.messages[page.messages.length - 1].id;
+      syncedThrough.set(key, Math.max(syncedThrough.get(key) ?? 0, after));
+      if (!page.has_more) break;
     }
   } catch {
     // The next reconnect triggers another catch-up.
@@ -282,9 +309,11 @@ export async function loadOlder(key: string) {
   if (s.loadingOlder || !s.hasMore || !s.messages.length) return;
   update(key, (st) => ({ ...st, loadingOlder: true }));
   try {
+    const seen = prunedBefore;
     const page = await api.get<MessagePage>(listUrl(key, { before: s.messages[0].id, limit: PAGE }));
-    merge(key, page.messages);
-    update(key, (st) => ({ ...st, hasMore: page.has_more }));
+    merge(key, sinceAsked(seen, page.messages));
+    // A clear or cleanup meanwhile that set it false has the last word.
+    update(key, (st) => ({ ...st, hasMore: st.hasMore && page.has_more }));
   } catch (e) {
     errorHandler?.((e as Error).message);
   } finally {
@@ -464,7 +493,7 @@ function flush() {
 /** After reconnecting: fill gaps, then send what waited (with fresh quick retries). */
 function onReconnect() {
   for (const key of convs.keys()) {
-    void catchUp(key);
+    sync(key);
     if (getConversation(key).pending.some((p) => p.quickRetries)) {
       update(key, (s) => ({ ...s, pending: s.pending.map((p) => (p.quickRetries ? { ...p, quickRetries: 0 } : p)) }));
     }
@@ -492,8 +521,14 @@ function ensureSubscribed() {
     // One already on its way here finishes; the computer keeps a single copy.
     if (p && p.status !== "sending") droppedElsewhere(client_id);
   });
-  // The first connection too: texts typed before it opened go out now.
-  events.onState((s) => s === "open" && flush());
+  // The first connection too: a first load that failed is tried again, and
+  // texts typed before it opened go out now. On a reconnect this runs before
+  // resync, which then finds the load on its way.
+  events.onState((s) => {
+    if (s !== "open") return;
+    for (const key of convs.keys()) if (!getConversation(key).loaded) sync(key);
+    flush();
+  });
   window.addEventListener("online", onReconnect);
   // The computer cleared every chat (up to message id `through`), or its
   // automatic cleanup deleted everything older than `before` (ms).
@@ -509,10 +544,14 @@ function ensureSubscribed() {
   const num = (v: unknown) => (typeof v === "number" ? v : 0);
   events.on("cleared", (data) => {
     const through = (data as { through?: unknown } | null)?.through;
+    // Only a real id is kept for pages still to come: without one, nothing newer may be hidden.
+    if (typeof through === "number") clearedThrough = Math.max(clearedThrough, through);
     dropOld(0, typeof through === "number" ? through : Number.MAX_SAFE_INTEGER);
   });
   events.on("pruned", (data) => {
     const d = (data ?? {}) as { before?: unknown; through?: unknown };
+    clearedThrough = Math.max(clearedThrough, num(d.through));
+    prunedBefore = Math.max(prunedBefore, num(d.before));
     dropOld(num(d.before), num(d.through));
   });
 }

@@ -595,3 +595,241 @@ describe("changes made elsewhere", () => {
     expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([2]);
   });
 });
+
+describe("after the connection comes back", () => {
+  const listCalls = () => h.api.get.mock.calls.filter((c) => String(c[0]).startsWith("/api/messages"));
+
+  it("loads a conversation whose first load failed, without another error message", async () => {
+    h.events.state = "open";
+    const store = await freshStore();
+    const errors: string[] = [];
+    store.setErrorHandler((m) => errors.push(m));
+    h.api.get.mockRejectedValueOnce(new h.ApiError(0, "连接不上电脑"));
+    await store.ensureLoaded("self", null);
+    expect(store.getConversation("self").loaded).toBe(false);
+    expect(errors).toEqual(["连接不上电脑"]);
+
+    // Still unreachable on the first try after reconnecting: no second message.
+    h.api.get.mockRejectedValueOnce(new h.ApiError(0, "连接不上电脑"));
+    h.emit("resync", null);
+    await settle();
+    expect(errors).toHaveLength(1);
+
+    h.api.get.mockResolvedValue({ messages: [msg(1), msg(2)], has_more: true });
+    h.emit("resync", null);
+    await settle();
+    expect(h.api.get).toHaveBeenLastCalledWith("/api/messages?limit=50");
+    expect(store.getConversation("self")).toMatchObject({ loaded: true, hasMore: true });
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1, 2]);
+  });
+
+  it("tries a failed first load again once per reconnect, not once per signal", async () => {
+    h.events.state = "open";
+    const store = await freshStore();
+    h.api.get.mockRejectedValueOnce(new h.ApiError(0, "连接不上电脑"));
+    await store.ensureLoaded("self", null);
+    let answer: (v: unknown) => void = () => undefined;
+    h.api.get.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    // What events.ts does on a reopen: the state changes first, then resync.
+    h.setState("connecting");
+    h.setState("open");
+    h.emit("resync", null);
+    expect(listCalls()).toHaveLength(2);
+    answer({ messages: [msg(1)], has_more: false });
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1]);
+  });
+
+  it("also tries a failed first load again when the stream opens for the first time", async () => {
+    h.events.state = "connecting";
+    const store = await freshStore();
+    h.api.get.mockRejectedValueOnce(new h.ApiError(0, "连接不上电脑"));
+    await store.ensureLoaded("self", null);
+    h.api.get.mockResolvedValue({ messages: [msg(1)], has_more: false });
+    h.setState("open");
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1]);
+  });
+
+  it("does not fetch a conversation only the outbox touched", async () => {
+    h.events.state = "open";
+    queue("c-1", "queued");
+    h.api.post.mockReturnValue(new Promise(() => undefined));
+    const store = await freshStore();
+    store.startOutbox();
+    h.setState("connecting");
+    h.setState("open");
+    h.emit("resync", null);
+    await settle();
+    expect(listCalls()).toHaveLength(0);
+  });
+
+  it("catches up from the last page it fetched, not from its own newer sends", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(1)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    // The stream is down: the computer's message 2 never arrives, while this phone's text gets id 3.
+    h.api.post.mockImplementation(async (_url: string, body: { client_id: string; text: string }) => msg(3, { client_id: body.client_id, text: body.text }));
+    store.sendText("self", "hi");
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1, 3]);
+
+    h.api.get.mockResolvedValueOnce({ messages: [msg(2, { from_host: true }), msg(3)], has_more: false });
+    h.emit("resync", null);
+    await settle();
+    expect(h.api.get).toHaveBeenLastCalledWith("/api/messages?after=1&limit=200");
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1, 2, 3]);
+
+    // The next catch-up starts after what that page held.
+    h.emit("resync", null);
+    await settle();
+    expect(h.api.get).toHaveBeenLastCalledWith("/api/messages?after=3&limit=200");
+  });
+
+  it("a catch-up that failed is not skipped past by newer messages from the stream", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(1)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    // Reconnected, but the catch-up request fails; the new stream then brings message 3.
+    h.api.get.mockRejectedValueOnce(new h.ApiError(0, "连接不上电脑"));
+    h.emit("resync", null);
+    await settle();
+    h.emit("msg", msg(3, { from_host: true }));
+    h.emit("resync", null);
+    await settle();
+    expect(h.api.get).toHaveBeenLastCalledWith("/api/messages?after=1&limit=200");
+  });
+
+  it("an upload that finishes while the stream is down does not move the catch-up start either", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(1)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    let done: (m: Message) => void = () => undefined;
+    h.uploadFile.mockReturnValue({ promise: new Promise<Message>((r) => (done = r)), abort: () => undefined });
+    store.sendFiles("self", [new File(["12345"], "v.mov")]);
+    await settle();
+    done(msg(4, { kind: "file", client_id: store.getConversation("self").pending[0].client_id }));
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1, 4]);
+    h.emit("resync", null);
+    await settle();
+    expect(h.api.get).toHaveBeenLastCalledWith("/api/messages?after=1&limit=200");
+  });
+});
+
+describe("pages on their way during a delete or clear", () => {
+  /** The next GET waits until the test answers it. */
+  function held() {
+    let answer: (v: unknown) => void = () => undefined;
+    h.api.get.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    return (v: unknown) => answer(v);
+  }
+
+  it("an older page does not bring back what was deleted or cleared meanwhile", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(51), msg(52)], has_more: true });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    const answer = held();
+    const older = store.loadOlder("self");
+    h.emit("msg_deleted", { ids: [50] });
+    h.emit("cleared", { through: 52 });
+    answer({ messages: [msg(49), msg(50)], has_more: true });
+    await older;
+    expect(store.getConversation("self")).toMatchObject({ messages: [], hasMore: false });
+  });
+
+  it("an older page does not bring back what a clear removed while the stream was down", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(51), msg(52)], has_more: true });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    const answer = held();
+    const older = store.loadOlder("self");
+    // The clear's own event was missed; a stream that opens again starts with this.
+    h.emit("pruned", { before: 0, through: 52 });
+    answer({ messages: [msg(49), msg(50)], has_more: true });
+    await older;
+    expect(store.getConversation("self")).toMatchObject({ messages: [], hasMore: false });
+  });
+
+  it("an older page asked for before a cleanup does not bring back what it deleted", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(5), msg(6)], has_more: true });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    const answer = held();
+    const older = store.loadOlder("self");
+    h.emit("pruned", { before: 35 });
+    answer({ messages: [msg(3), msg(4)], has_more: true });
+    await older;
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([4, 5, 6]);
+  });
+
+  it("a catch-up page does not bring back a message deleted meanwhile", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(1), msg(2)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    const answer = held();
+    h.emit("resync", null);
+    h.emit("msg_deleted", { ids: [2] });
+    answer({ messages: [msg(2), msg(3)], has_more: false });
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([1, 3]);
+  });
+
+  it("a catch-up page asked for before the stream's cleanup notice is filtered, and is not asked for again", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(5)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    const answer = held();
+    h.emit("resync", null);
+    h.emit("pruned", { before: 65, through: 0 });
+    answer({ messages: [msg(6), msg(7)], has_more: false });
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([7]);
+    // Message 6 is gone on the computer too: the next catch-up starts after 7.
+    h.emit("resync", null);
+    await settle();
+    expect(h.api.get).toHaveBeenLastCalledWith("/api/messages?after=7&limit=200");
+  });
+
+  it("a first page does not bring back what a cleanup deleted meanwhile", async () => {
+    h.events.state = "open";
+    const answer = held();
+    const store = await freshStore();
+    const loading = store.ensureLoaded("self", null);
+    h.emit("pruned", { before: 25 });
+    answer({ messages: [msg(1), msg(2), msg(3)], has_more: true });
+    await loading;
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([3]);
+  });
+
+  it("a reply to a send that was cleared meanwhile shows nothing and leaves nothing pending", async () => {
+    h.events.state = "open";
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    let answer: (m: Message) => void = () => undefined;
+    h.api.post.mockReturnValueOnce(new Promise<Message>((r) => (answer = r)));
+    store.sendText("self", "a password");
+    const cid = store.getConversation("self").pending[0].client_id;
+    h.emit("cleared", { through: 3 });
+    answer(msg(3, { client_id: cid }));
+    await settle();
+    expect(store.getConversation("self")).toMatchObject({ messages: [], pending: [] });
+  });
+
+  it("a clear without an id still lets newer messages in", async () => {
+    h.api.get.mockResolvedValue({ messages: [msg(1)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    h.emit("cleared", {});
+    h.emit("msg", msg(9));
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([9]);
+  });
+});

@@ -33,7 +33,7 @@ class EventHub {
   private lastEventAt = 0;
   private hiddenAt = 0;
   private offlineSince = 0;
-  private everOpened = false;
+  private attempts = 0;
   private started = false;
   state: ConnState = "connecting";
 
@@ -99,6 +99,8 @@ class EventHub {
 
   private open() {
     const es = new EventSource("/api/events");
+    // Every attempt after the first follows one that failed, was given up on or was replaced.
+    const first = this.attempts++ === 0;
     this.es = es;
     window.clearTimeout(this.openTimer);
     this.openTimer = window.setTimeout(() => {
@@ -131,11 +133,9 @@ class EventHub {
     es.onopen = () => {
       window.clearTimeout(this.openTimer);
       this.lastEventAt = Date.now();
-      const reconnect = this.everOpened;
-      this.everOpened = true;
       this.setState("open");
-      // Anything sent while we were away has to be fetched again.
-      if (reconnect) this.dispatch("resync", null);
+      // Anything sent while no stream was open has to be fetched again.
+      if (!first) this.dispatch("resync", null);
     };
     es.onerror = () => {
       // Never leave reconnecting to the browser: after a dropped connection
