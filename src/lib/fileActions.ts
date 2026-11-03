@@ -3,9 +3,9 @@
 
 import { api, errorMessage } from "./api";
 
-const REVEALED = "为了安全，程序、脚本、安装包、磁盘映像、描述文件和证书不会直接打开，已在文件夹中显示";
+const REVEALED = "为了安全，只有常见的图片、视频、音频、PDF、文本、文档和压缩包会直接打开，这个文件已在文件夹中显示";
 
-/** Opens with the default app. Anything that would run, mount or install is only revealed in the folder. */
+/** Opens common documents, media and archives with the default app; any other file is only revealed in its folder. */
 export async function hostOpen(path: string, notify?: (msg: string) => void) {
   const res = await api.post<{ action?: string }>("/api/host/open", { path });
   if (res?.action === "revealed") notify?.(REVEALED);
