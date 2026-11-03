@@ -810,6 +810,19 @@ describe("pages on their way during a delete or clear", () => {
     expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([3]);
   });
 
+  it("a cleanup's cutoff only filters pages that were on their way when it came", async () => {
+    h.events.state = "open";
+    h.api.get.mockResolvedValueOnce({ messages: [msg(5)], has_more: false });
+    const store = await freshStore();
+    await store.ensureLoaded("self", null);
+    h.emit("pruned", { before: 65, through: 0 });
+    // Written after that cleanup by a computer whose clock has gone back since: 6 has an earlier time.
+    h.api.get.mockResolvedValueOnce({ messages: [msg(6), msg(7)], has_more: false });
+    h.emit("resync", null);
+    await settle();
+    expect(store.getConversation("self").messages.map((m) => m.id)).toEqual([6, 7]);
+  });
+
   it("a reply to a send that was cleared meanwhile shows nothing and leaves nothing pending", async () => {
     h.events.state = "open";
     const store = await freshStore();
