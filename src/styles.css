@@ -1127,7 +1127,8 @@ h2 {
   color: #fff;
   background: var(--success);
 }
-/* With a mouse a click on a bubble only selects text, so its actions are under ⋯. */
+/* ⋯ is for a mouse, where a click on a bubble only selects text; on the iPhone a
+   tap on the bubble opens its actions. */
 .msg-more {
   display: none;
 }

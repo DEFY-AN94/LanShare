@@ -23,10 +23,10 @@ interface PromptOptions {
   selectStem?: boolean;
 }
 
-type Request =
+type DialogRequest =
   | { type: "confirm"; opts: ConfirmOptions; resolve: (v: boolean) => void }
   | { type: "prompt"; opts: PromptOptions; resolve: (v: string | null) => void };
-type Pending = Request & { id: number };
+type Pending = DialogRequest & { id: number };
 
 function settle(p: Pending, value: boolean | string | null) {
   if (p.type === "confirm") p.resolve(value === true);
@@ -50,7 +50,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   // Outside the state updater, which StrictMode runs twice.
   const nextId = useRef(1);
 
-  const show = useCallback((r: Request) => {
+  const show = useCallback((r: DialogRequest) => {
     const p = { ...r, id: nextId.current++ };
     setQueue((q) => [...q, p]);
   }, []);

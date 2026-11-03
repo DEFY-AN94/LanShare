@@ -88,6 +88,36 @@ describe("useModalFocus", () => {
     expect(dialog("A")!.contains(document.activeElement)).toBe(true);
   });
 
+  it("leaves focus where closing put it on purpose", () => {
+    function Rename() {
+      const [open, setOpen] = useState(false);
+      const field = useRef<HTMLInputElement>(null);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>改名</button>
+          <input ref={field} aria-label="名称" />
+          {open && (
+            <Modal
+              name="A"
+              onEscape={() => {
+                field.current!.focus();
+                setOpen(false);
+              }}
+            />
+          )}
+        </>
+      );
+    }
+    render(<Rename />);
+    const button = byText("改名")!;
+    button.focus();
+    act(() => button.click());
+    expect(document.activeElement).toBe(dialog("A"));
+    press("Escape");
+    expect(dialog("A")).toBeNull();
+    expect(document.activeElement).toBe(document.querySelector('[aria-label="名称"]'));
+  });
+
   it("Tab also reaches the controls of a video or audio player", () => {
     render(
       <Modal name="viewer">

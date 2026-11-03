@@ -261,7 +261,7 @@ Key points:
 - Devices: device list + Add device (QR code panel)
 - Settings: shared folder location, LAN address and port, certificate fingerprint, **暂停共享** (Pause sharing) toggle, reset certificate, clear chat history
 - Closing the window keeps the app running in the background: on macOS, click the Dock icon to bring it back; on Windows, restore it from the tray
-- Dialogs and sheets take keyboard focus when they open, keep Tab inside, close with Escape and give focus back when they close. A confirm that deletes or resets something starts on **取消** (Cancel), so Enter cancels it; Tab moves to the button that does it. A pairing request starts on the dialog itself, so a stray Enter neither allows nor refuses, and only its buttons close it. A confirm asked for while another dialog is open waits until that one is answered
+- Dialogs and sheets take keyboard focus when they open, keep Tab inside, close with Escape and give focus back when they close. A confirm that deletes or resets something starts on **取消** (Cancel), so Enter cancels it; Tab moves to the button that does it. A pairing request starts on the dialog itself, so a stray Enter neither allows nor refuses, and only its buttons close it. A confirm or prompt asked for while another one is open waits until that one is answered
 
 **iPhone web page**: two tabs at the bottom, Messages / Files
 
