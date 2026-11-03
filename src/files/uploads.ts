@@ -32,11 +32,15 @@ const MAX_AUTO_RETRIES = 3;
 const RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 /** "Would it fit?" asked before a file is sent. */
 const CHECK_TIMEOUT_MS = 8_000;
+/** How long a failed upload that waits for the connection keeps the screen on. */
+const RECONNECT_HOLD_MS = 30_000;
 let items: UploadItem[] = [];
 const handles = new Map<string, UploadHandle<FileEntry>>();
 const listeners = new Set<() => void>();
 const doneListeners = new Set<(dir: string) => void>();
 let releaseScreen: (() => void) | null = null;
+/** Timers failed() has set: an automatic retry, or a wait for the connection. */
+let retriesDue = 0;
 let subscribed = false;
 
 function emit() {
@@ -55,7 +59,10 @@ function retryableStatus(status: number) {
 }
 
 function updateScreenHold() {
-  const active = handles.size > 0;
+  // Everything still to send counts, not only running requests: once let go,
+  // WebKit grants the lock again only soon after a tap, so the next file or
+  // an automatic retry would run without it.
+  const active = retriesDue > 0 || items.some((i) => i.status === "queued" || i.status === "uploading");
   if (active && !releaseScreen) releaseScreen = holdScreen();
   else if (!active && releaseScreen) {
     releaseScreen();
@@ -72,15 +79,27 @@ function pump() {
     slots--;
     void start(it);
   }
+  updateScreenHold();
 }
 
 function failed(it: UploadItem, e: ApiError) {
   patch(it.id, { status: "failed", error: e.message, retryable: retryableStatus(e.status) });
   // Still connected (a stalled upload, a busy computer): try again shortly.
-  // Otherwise the retry waits for the connection to come back.
+  // Otherwise the retry waits for the connection to come back; the screen
+  // stays on for up to RECONNECT_HOLD_MS meanwhile, so a short drop does not
+  // cost the lock.
   const current = items.find((x) => x.id === it.id);
-  if (current && retryableStatus(e.status) && events.state === "open" && current.autoRetries < MAX_AUTO_RETRIES) {
-    window.setTimeout(retryAfterReconnect, RETRY_DELAYS_MS[current.autoRetries] ?? 10_000);
+  if (current && retryableStatus(e.status) && current.autoRetries < MAX_AUTO_RETRIES) {
+    const open = events.state === "open";
+    retriesDue++;
+    window.setTimeout(
+      () => {
+        retriesDue--;
+        if (open) retryAfterReconnect();
+        updateScreenHold();
+      },
+      open ? (RETRY_DELAYS_MS[current.autoRetries] ?? 10_000) : RECONNECT_HOLD_MS,
+    );
   }
   emit();
 }
@@ -106,7 +125,6 @@ async function start(it: UploadItem) {
     patch(it.id, { loaded, speed: secs > 0.3 ? loaded / secs : 0 });
   });
   handles.set(it.id, handle);
-  updateScreenHold();
   handle.promise
     .then(() => {
       patch(it.id, { status: "done", loaded: it.size });
@@ -120,7 +138,6 @@ async function start(it: UploadItem) {
     })
     .finally(() => {
       handles.delete(it.id);
-      updateScreenHold();
       pump();
     });
 }

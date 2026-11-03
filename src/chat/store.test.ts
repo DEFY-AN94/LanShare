@@ -1,5 +1,5 @@
-// The chat store's queueing, retry and merge rules, with the network and the
-// event stream replaced by stand-ins.
+// The chat store's queueing, retry and merge rules, with the network, the
+// event stream and the wake lock replaced by stand-ins.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../lib/types";
@@ -38,11 +38,13 @@ const h = vi.hoisted(() => {
     },
     api: { get: vi.fn(), post: vi.fn(), del: vi.fn() },
     uploadFile: vi.fn(),
+    release: vi.fn(),
+    holdScreen: vi.fn(),
   };
 });
 
 vi.mock("../lib/events", () => ({ events: h.events }));
-vi.mock("../lib/wakeLock", () => ({ holdScreen: () => () => undefined }));
+vi.mock("../lib/wakeLock", () => ({ holdScreen: h.holdScreen }));
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return { api: h.api, qs: actual.qs, uploadFile: h.uploadFile, ApiError: h.ApiError };
@@ -93,6 +95,8 @@ beforeEach(() => {
   h.api.post.mockReset();
   h.api.del.mockReset().mockResolvedValue(undefined);
   h.uploadFile.mockReset();
+  h.release.mockReset();
+  h.holdScreen.mockReset().mockReturnValue(h.release);
 });
 
 describe("sending", () => {
@@ -361,6 +365,187 @@ describe("attachments", () => {
     store.sendFiles("self", [new File(["12345"], "v.mov")]);
     await settle();
     expect(h.uploadFile.mock.calls[0][0]).toBe("/api/messages/upload?client_id=" + store.getConversation("self").pending[0].client_id + "&name=v.mov&size=5");
+  });
+});
+
+describe("keeping the screen on", () => {
+  /** An upload whose outcome the test decides. */
+  function upload() {
+    let resolve!: (m: Message) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<Message>((res, rej) => ((resolve = res), (reject = rej)));
+    h.uploadFile.mockReturnValueOnce({ promise, abort: () => reject(new h.ApiError(-1, "已取消")) });
+    return { resolve, reject };
+  }
+
+  it.each(["the upload stalls", "the check times out"])("keeps it on for the quick retry when %s, and lets go once the file is sent", async (how) => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      const first = how === "the upload stalls" ? upload() : null;
+      const second = upload();
+      if (!first) h.api.get.mockRejectedValueOnce(new h.ApiError(0, "连接不上电脑"));
+      store.sendFiles("self", [new File(["12345"], "v.mov")]);
+      await vi.advanceTimersByTimeAsync(0);
+      first?.reject(new h.ApiError(0, "上传停住了，连上后会自动重试"));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(h.uploadFile).toHaveBeenCalledTimes(first ? 2 : 1);
+      expect(h.release).not.toHaveBeenCalled();
+      second.resolve(msg(9, { client_id: store.getConversation("self").pending[0].client_id, kind: "file" }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getConversation("self").pending).toEqual([]);
+      expect(h.holdScreen).toHaveBeenCalledTimes(1);
+      expect(h.release).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps it on while an attachment waits a few seconds for the connection, and sends it again once connected", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      const first = upload();
+      const second = upload();
+      store.sendFiles("self", [new File(["12345"], "v.mov")]);
+      await vi.advanceTimersByTimeAsync(0);
+      h.events.state = "connecting";
+      first.reject(new h.ApiError(0, "上传中断，请检查网络"));
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(store.getConversation("self").pending[0].status).toBe("waiting");
+      expect(h.uploadFile).toHaveBeenCalledTimes(1);
+      h.setState("open");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.uploadFile).toHaveBeenCalledTimes(2);
+      expect(h.uploadFile.mock.calls[1][0]).toBe(h.uploadFile.mock.calls[0][0]);
+      second.resolve(msg(9, { client_id: store.getConversation("self").pending[0].client_id, kind: "file" }));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.getConversation("self").pending).toEqual([]);
+      expect(h.holdScreen).toHaveBeenCalledTimes(1);
+      expect(h.release).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets go 30 s after an attachment started waiting for the connection, and sends it once connected", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      const first = upload();
+      upload();
+      store.sendFiles("self", [new File(["12345"], "v.mov")]);
+      await vi.advanceTimersByTimeAsync(0);
+      h.events.state = "offline";
+      first.reject(new h.ApiError(0, "上传中断，请检查网络"));
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(store.getConversation("self").pending[0].status).toBe("waiting");
+      expect(h.release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.release).toHaveBeenCalledTimes(1);
+      expect(h.uploadFile).toHaveBeenCalledTimes(1);
+      h.setState("open");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.uploadFile).toHaveBeenCalledTimes(2);
+      expect(h.uploadFile.mock.calls[1][0]).toBe(h.uploadFile.mock.calls[0][0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps it on for 30 s more when the connection drops while a quick retry is due", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      const first = upload();
+      store.sendFiles("self", [new File(["12345"], "v.mov")]);
+      await vi.advanceTimersByTimeAsync(0);
+      first.reject(new h.ApiError(0, "上传停住了，连上后会自动重试"));
+      await vi.advanceTimersByTimeAsync(0);
+      h.setState("offline");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(h.uploadFile).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(h.release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.release).toHaveBeenCalledTimes(1);
+      expect(h.holdScreen).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets go when an attachment is deleted before its quick retry, and the connection dropped meanwhile", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      const first = upload();
+      store.sendFiles("self", [new File(["12345"], "v.mov")]);
+      await vi.advanceTimersByTimeAsync(0);
+      first.reject(new h.ApiError(0, "上传停住了，连上后会自动重试"));
+      await vi.advanceTimersByTimeAsync(0);
+      h.setState("offline");
+      store.discard("self", store.getConversation("self").pending[0].client_id);
+      expect(h.release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(h.release).toHaveBeenCalledTimes(1);
+      expect(h.uploadFile).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not take it for texts", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      h.api.post.mockRejectedValue(new h.ApiError(0, "连接不上电脑"));
+      // Two texts whose quick retries overlap: with one, the hold would be
+      // looked at again only after its retry, so counting texts would not show.
+      store.sendText("self", "slow computer");
+      await vi.advanceTimersByTimeAsync(500);
+      store.sendText("self", "still slow");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.holdScreen).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not take it for texts that wait for the connection either", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      // Both go out while connected and fail once the connection is gone.
+      // Two, as above: when the first wait ends the second still counts, so
+      // a text that kept the screen on would show.
+      let drop!: () => void;
+      const dropped = new Promise<void>((r) => (drop = r));
+      h.api.post.mockImplementation(() => dropped.then(() => Promise.reject(new h.ApiError(0, "连接不上电脑"))));
+      store.sendText("self", "slow computer");
+      store.sendText("self", "still slow");
+      h.events.state = "offline";
+      drop();
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(store.getConversation("self").pending.map((p) => p.status)).toEqual(["waiting", "waiting"]);
+      expect(h.holdScreen).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
