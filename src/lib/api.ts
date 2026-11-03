@@ -63,7 +63,8 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
     try {
       return (await res.json()) as T;
     } catch (e) {
-      throw e instanceof SyntaxError ? new ApiError(res.status, "服务器返回了无法识别的内容") : new ApiError(0, OFFLINE_MESSAGE);
+      // WebKit rejects with a DOMException named SyntaxError, not a SyntaxError.
+      throw (e as Error | null)?.name === "SyntaxError" ? new ApiError(res.status, "服务器返回了无法识别的内容") : new ApiError(0, OFFLINE_MESSAGE);
     }
   } finally {
     window.clearTimeout(timer);

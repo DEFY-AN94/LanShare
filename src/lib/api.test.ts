@@ -147,3 +147,19 @@ it("says so when a reply is not the JSON it claims to be", async () => {
   await expect(reply).rejects.toBeInstanceOf(ApiError);
   await expect(reply).rejects.toMatchObject({ status: 200, message: "服务器返回了无法识别的内容" });
 });
+
+it("says so too in Safari, which reports such a reply as a DOMException", async () => {
+  Object.assign(globalThis, {
+    window: { setTimeout: () => 0, clearTimeout: () => undefined },
+    fetch: vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.reject(new DOMException("The string did not match the expected pattern.", "SyntaxError")),
+    })),
+  });
+  const { api, ApiError } = await import("./api");
+  const reply = api.get("/api/messages?limit=50");
+  await expect(reply).rejects.toBeInstanceOf(ApiError);
+  await expect(reply).rejects.toMatchObject({ status: 200, message: "服务器返回了无法识别的内容" });
+});
