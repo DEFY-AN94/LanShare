@@ -71,7 +71,11 @@ if (typeof document !== "undefined") {
   for (const type of ["click", "touchend"] as const) document.addEventListener(type, onTap, { capture: true });
 }
 
-/** Keeps the screen on until the returned function is called. */
+/**
+ * Keeps the screen on until the returned function is called. Let go only
+ * when nothing is left to send soon: a hold taken again without a recent tap
+ * is refused on iOS.
+ */
 export function holdScreen(): () => void {
   if (!listening) {
     listening = true;

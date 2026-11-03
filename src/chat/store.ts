@@ -50,6 +50,8 @@ const RETRY_SOON_MS = 2_000;
 const MAX_QUICK_RETRIES = 3;
 /** "Would it fit?" asked before an attachment is sent. */
 const CHECK_TIMEOUT_MS = 8_000;
+/** How long an attachment that waits for the connection keeps the screen on. */
+const RECONNECT_HOLD_MS = 30_000;
 /** The phone's own conversation; the only one whose outbox is kept. */
 const SELF = "self";
 /** One stored entry per unsent text, so several tabs never overwrite each other's. */
@@ -78,6 +80,8 @@ const starting = new Set<string>();
 let uploadQueue: { key: string; client_id: string }[] = [];
 let errorHandler: ((msg: string) => void) | null = null;
 let releaseScreen: (() => void) | null = null;
+/** Attachments waiting to be sent again that keep the screen on (see keepScreenFor). */
+let retriesDue = 0;
 /** The outbox entries this page has stored, by client id. */
 const stored = new Map<string, string>();
 
@@ -198,17 +202,26 @@ function fail(key: string, client_id: string, e: unknown) {
     update(key, (s) => ({ ...s, pending: s.pending.filter((p) => p.client_id !== client_id) }));
     return;
   }
+  const p = getConversation(key).pending.find((x) => x.client_id === client_id);
+  const attachment = p?.kind === "file";
   // Not reachable: wait for the connection instead of showing an error.
   if (status === 0 && !connected()) {
     patchPending(key, client_id, { status: "waiting", error: undefined, loaded: 0 });
+    if (attachment) keepScreenFor(RECONNECT_HOLD_MS);
     return;
   }
   // The connection still looks open (a stalled upload, a busy computer): try again soon,
   if (status === 0) {
-    const quick = getConversation(key).pending.find((p) => p.client_id === client_id)?.quickRetries ?? 0;
+    const quick = p?.quickRetries ?? 0;
     if (quick < MAX_QUICK_RETRIES) {
       patchPending(key, client_id, { status: "waiting", error: undefined, loaded: 0, quickRetries: quick + 1 });
-      setTimeout(flush, RETRY_SOON_MS);
+      if (attachment) {
+        keepScreenFor(RETRY_SOON_MS, () => {
+          flush();
+          // The connection dropped meanwhile, so nothing was sent: wait for it as above.
+          if (!connected() && getConversation(key).pending.some((x) => x.client_id === client_id)) keepScreenFor(RECONNECT_HOLD_MS);
+        });
+      } else setTimeout(flush, RETRY_SOON_MS);
       return;
     }
   }
@@ -297,8 +310,23 @@ async function postText(key: string, client_id: string, text: string) {
   }
 }
 
+/**
+ * Keeps the screen on for `ms` while an attachment waits to be sent again,
+ * then runs `then`: once the hold is let go, WebKit grants the lock again
+ * only soon after a tap, so the next attempt would run without it. Texts
+ * never hold the screen.
+ */
+function keepScreenFor(ms: number, then?: () => void) {
+  retriesDue++;
+  setTimeout(() => {
+    then?.();
+    retriesDue--;
+    updateScreenHold();
+  }, ms);
+}
+
 function updateScreenHold() {
-  const active = handles.size + starting.size > 0;
+  const active = handles.size + starting.size + retriesDue > 0;
   if (active && !releaseScreen) releaseScreen = holdScreen();
   else if (!active && releaseScreen) {
     releaseScreen();
@@ -331,16 +359,16 @@ async function startUpload(key: string, client_id: string, file: File) {
     await api.get(`/api/upload-check${qs({ size: file.size })}`, CHECK_TIMEOUT_MS);
   } catch (e) {
     starting.delete(client_id);
-    updateScreenHold();
     fail(key, client_id, e);
     pumpUploads();
+    updateScreenHold();
     return;
   }
   starting.delete(client_id);
   if (!getConversation(key).pending.some((x) => x.client_id === client_id)) {
     // Discarded while asking.
-    updateScreenHold();
     pumpUploads();
+    updateScreenHold();
     return;
   }
   {
@@ -359,8 +387,8 @@ async function startUpload(key: string, client_id: string, file: File) {
       })
       .finally(() => {
         handles.delete(client_id);
-        updateScreenHold();
         pumpUploads();
+        updateScreenHold();
       });
   }
 }
