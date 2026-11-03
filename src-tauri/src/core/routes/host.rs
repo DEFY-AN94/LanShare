@@ -37,6 +37,7 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         ca_fingerprint: state.tls.ca_fingerprint(),
         ca_name: state.tls.ca_name(),
         paused: state.is_paused(),
+        config_unreadable: state.config_unreadable,
         version: env!("CARGO_PKG_VERSION").to_string(),
         network_warning: state.network_warning(),
         chat_retention_days: state.chat_retention_days(),
