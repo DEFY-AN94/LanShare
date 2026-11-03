@@ -363,11 +363,7 @@ pub async fn pick_shared_root(State(state): State<Shared>, Extension(_s): Extens
     let sandbox = Sandbox::new(&dir)
         .map_err(|e| ApiError::bad_request(format!("无法使用这个文件夹：{e}")))?
         .with_deny(std::slice::from_ref(&state.data_dir));
-    {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.shared_root = sandbox.root().to_path_buf();
-        cfg.save(&state.data_dir).map_err(ApiError::internal)?;
-    }
+    state.set_shared_root(sandbox.root().to_path_buf()).map_err(ApiError::internal)?;
     state.set_sandbox(sandbox);
     crate::core::watch_shared_folder(&state);
     state.emit_files_changed("");

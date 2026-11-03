@@ -445,6 +445,12 @@ impl AppState {
         true
     }
 
+    /// Saves a folder picked in Settings as the shared folder. A save that
+    /// fails changes nothing, so no later save writes a folder that is not shared.
+    pub fn set_shared_root(&self, root: PathBuf) -> std::io::Result<()> {
+        self.change_config(|c| c.shared_root = root)
+    }
+
     /// A folder picked in Settings replaces any preferred one.
     pub fn set_sandbox(&self, sb: Sandbox) {
         let mut preferred = self.preferred_root.lock().unwrap();

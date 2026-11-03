@@ -1110,6 +1110,29 @@ async fn an_unreadable_config_starts_paused_and_says_so() {
     assert!(!env().state.config_unreadable, "a missing config.json is a first start");
 }
 
+#[tokio::test]
+async fn a_picked_folder_that_cannot_be_saved_changes_nothing() {
+    let (e, bridge) = m8::recorded();
+    let before = e.state.sandbox().root().to_path_buf();
+    let picked = e.state.home_dir.join("Picked");
+    std::fs::create_dir(&picked).unwrap();
+    *bridge.picked.lock().unwrap() = Some(picked.clone());
+    // A folder where the settings are written first makes every save fail.
+    let blocker = e.state.data_dir.join("config.json.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    let pick = || host_req(Method::POST, "/api/host/shared-root/pick", None);
+    assert_eq!(send(&e.local, pick()).await.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!((e.state.sandbox().root(), &e.state.config.lock().unwrap().shared_root), (before.as_path(), &before));
+
+    // The next change saves the settings as they are, with the folder still shared.
+    std::fs::remove_dir(&blocker).unwrap();
+    assert_eq!(send(&e.local, host_req(Method::POST, "/api/host/notifications", Some(json!({"hide_text": true})))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(saved_config(&e).shared_root, before);
+    assert_eq!(send(&e.local, pick()).await.status, StatusCode::OK);
+    let picked = dunce::canonicalize(&picked).unwrap();
+    assert_eq!((e.state.sandbox().root(), saved_config(&e).shared_root), (picked.as_path(), picked.clone()));
+}
+
 /// Resuming after an unreadable start is saved, and the next start neither pauses nor shows the notice.
 #[tokio::test]
 async fn resuming_after_an_unreadable_config_lasts() {

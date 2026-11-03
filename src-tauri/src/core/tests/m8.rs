@@ -25,6 +25,8 @@ pub(super) struct RecordingBridge {
     shortcut: Mutex<Option<String>>,
     refuse_shortcuts: AtomicBool,
     login_item: Mutex<Option<&'static str>>,
+    /// What the folder picker returns.
+    pub(super) picked: Mutex<Option<PathBuf>>,
 }
 
 impl HostBridge for RecordingBridge {
@@ -72,7 +74,7 @@ impl HostBridge for RecordingBridge {
         Ok(())
     }
     fn pick_folder(&self) -> Option<PathBuf> {
-        None
+        self.picked.lock().unwrap().clone()
     }
     fn login_item(&self) -> &'static str {
         self.login_item.lock().unwrap().unwrap_or("off")
