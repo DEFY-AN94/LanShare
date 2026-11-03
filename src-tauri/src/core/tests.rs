@@ -1152,6 +1152,78 @@ async fn resuming_after_an_unreadable_config_lasts() {
     assert_eq!(std::fs::read(e.state.data_dir.join("config.json.bad")).unwrap(), b"{\n  \"paused\": false,\n  \"port\": 392");
 }
 
+/// What a start that fails shows and logs (lib.rs) names no folder.
+#[tokio::test]
+async fn a_failed_start_names_no_path() {
+    let dir = tempfile::Builder::new().prefix("LOGMARK-").tempdir().unwrap();
+    let home = dir.path().join("LOGMARK-home");
+    std::fs::create_dir(&home).unwrap();
+    // A file where the app data folder belongs: the start ends before it opens anything.
+    let data_dir = home.join("LOGMARK-data");
+    std::fs::write(&data_dir, "").unwrap();
+    let opts = super::StartOptions { data_dir: data_dir.clone(), home_dir: home.clone(), shared_root: None, port: None, local_port: 0, upload_reserve: None };
+    let Err(e) = super::start(opts, Arc::new(HeadlessBridge)).await else { panic!("a start without its data folder must fail") };
+    let why = format!("{e:#}");
+    assert!(why.starts_with("create the app data folder: ") && !why.contains("LOGMARK"), "{why}");
+
+    // A file where ~/LanShare belongs.
+    std::fs::write(home.join("LanShare"), "").unwrap();
+    let mut config = Config::with_root(home.join("LanShare"));
+    let Err(e) = super::open_shared_folder(&mut config, &home, &data_dir) else { panic!("a default folder that cannot be created must fail") };
+    let why = format!("{e:#}");
+    assert!(why.starts_with("create the default shared folder: ") && !why.contains("LOGMARK"), "{why}");
+}
+
+/// Runs `f` on a thread called `name`, which must panic.
+fn panic_on_thread(name: &str, f: impl FnOnce() + Send + 'static) {
+    let joined = std::thread::Builder::new().name(name.into()).spawn(f).unwrap().join();
+    assert!(joined.is_err(), "the thread should have panicked");
+}
+
+/// The captured log lines about a panic on the thread called `name`.
+fn panic_lines(logs: &Capture, name: &str) -> Vec<String> {
+    let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    text.lines().filter(|l| l.contains("panic at ") && l.contains(&format!("(thread {name})"))).map(str::to_string).collect()
+}
+
+/// The panic hook (core::logging) logs where a panic happened, never what it said.
+#[test]
+fn a_panic_is_logged_without_its_message() {
+    let logs = captured_logs();
+    super::logging::log_panics();
+    panic_on_thread("panic-check", || panic!("LOGMARK in a panic message"));
+    let lines = panic_lines(&logs, "panic-check");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    // This file, by its path in the source tree.
+    assert!(lines[0].contains("panic at src") && lines[0].contains("tests.rs:"), "{}", lines[0]);
+    let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    assert!(!text.contains("LOGMARK"), "a panic's message reached the log:\n{text}");
+}
+
+#[test]
+fn the_panic_hook_is_installed_once() {
+    let logs = captured_logs();
+    super::logging::log_panics();
+    super::logging::log_panics();
+    panic_on_thread("panic-twice", || panic!("a panic"));
+    assert_eq!(panic_lines(&logs, "panic-twice").len(), 1);
+}
+
+/// A panic while this thread holds the log file is not logged, since the hook
+/// would wait for the file; once the writer is left, panics are logged again.
+#[test]
+fn a_panic_while_writing_the_log_is_not_logged() {
+    let logs = captured_logs();
+    super::logging::log_panics();
+    panic_on_thread("panic-while-writing", || {
+        let inside = std::panic::catch_unwind(|| super::logging::while_writing(|| panic!("inside the log writer")));
+        assert!(inside.is_err());
+        panic!("after the log writer");
+    });
+    // Two lines if the first was logged, none if the flag stayed set.
+    assert_eq!(panic_lines(&logs, "panic-while-writing").len(), 1);
+}
+
 #[tokio::test]
 async fn static_shell_has_security_headers() {
     let e = env();

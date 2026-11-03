@@ -148,7 +148,7 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
     let (sandbox, preferred) = match usable {
         Some(sb) => (sb, None),
         None => {
-            let sb = Sandbox::new(&default).with_context(|| format!("create {}", default.display()))?;
+            let sb = Sandbox::new(&default).context("create the default shared folder")?;
             if configured == default || unsafe_root_reason(&configured, home, data_dir).is_some() {
                 config.shared_root = sb.root().to_path_buf();
                 (sb, None)
@@ -162,7 +162,7 @@ fn open_shared_folder(config: &mut Config, home: &std::path::Path, data_dir: &st
 
 /// Starts both listeners. Must run inside a tokio runtime.
 pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<ServerHandle> {
-    std::fs::create_dir_all(&opts.data_dir).with_context(|| format!("create {}", opts.data_dir.display()))?;
+    std::fs::create_dir_all(&opts.data_dir).context("create the app data folder")?;
     logging::start_file(&opts.data_dir);
     guard::raise_fd_limit();
     let (mut config, config_unreadable) = Config::load_or_default(&opts.data_dir, &opts.home_dir);

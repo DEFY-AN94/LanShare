@@ -4,13 +4,15 @@
 //! Privacy rule for every log line in LanShare: never message text, file or
 //! folder names, or paths (paths carry names). Say what happened and why,
 //! not where. `core::tests::logs_never_contain_message_text_or_file_names`
-//! checks the main request paths with marker strings.
+//! checks the main request paths with marker strings. A panic is logged by
+//! its place in the code only, since its message can hold any of these.
 
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -78,11 +80,41 @@ fn append(slot: &mut Option<LogFile>, buf: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+thread_local! {
+    /// This thread holds the log file. A panic here is not logged, since
+    /// the panic hook would wait for the file this thread already holds.
+    static WRITING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Sets `WRITING` until dropped, also when a panic unwinds the thread.
+struct Writing(bool);
+
+impl Writing {
+    fn start() -> Writing {
+        Writing(WRITING.replace(true))
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        WRITING.set(self.0);
+    }
+}
+
+/// Tests: runs `f` as if this thread were writing the log file.
+#[cfg(test)]
+pub(super) fn while_writing<R>(f: impl FnOnce() -> R) -> R {
+    let _writing = Writing::start();
+    f()
+}
+
 /// Writes to the log file if one is open; logging never fails the caller.
 struct FileWriter;
 
 impl Write for FileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Before the lock, so it is still set until the lock is released.
+        let _writing = Writing::start();
         let mut slot = FILE.lock().unwrap_or_else(|p| p.into_inner());
         let _ = append(&mut slot, buf);
         Ok(buf.len())
@@ -114,6 +146,34 @@ pub fn init() {
     if installed {
         let _ = FILTER.set(handle);
     }
+    log_panics();
+}
+
+/// Logs where a panic happened and on which thread, then hands it on to the
+/// hook that was there before (in release builds the process then aborts).
+/// Never the panic's message: it can hold paths, names or text. Installed
+/// once, however often this is called.
+pub(crate) fn log_panics() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !WRITING.get() {
+                let place = info.location().map_or_else(|| "an unknown place".to_string(), |l| panic_place(l.file(), l.line(), l.column()));
+                tracing::error!("panic at {place} (thread {})", std::thread::current().name().unwrap_or("unnamed"));
+            }
+            previous(info);
+        }));
+    });
+}
+
+/// `file:line:column` of a panic. LanShare's own files keep their path in the
+/// source tree (cargo passes them as `src/...`); any other path, such as a
+/// dependency's source on the computer that built LanShare, keeps only its
+/// file name.
+fn panic_place(file: &str, line: u32, column: u32) -> String {
+    let file = if file.starts_with("src/") || file.starts_with("src\\") { file } else { file.rsplit(['/', '\\']).next().unwrap_or(file) };
+    format!("{file}:{line}:{column}")
 }
 
 /// Starts writing `<data_dir>/logs/lanshare.log`.
@@ -176,5 +236,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(rotated(dir.path(), 1)).unwrap(), "older");
         assert!(!rotated(dir.path(), 2).exists());
         assert_eq!(std::fs::metadata(dir.path().join(FILE_NAME)).unwrap().len(), 12 * 512 * 1024);
+    }
+
+    /// The same on every platform, whatever kind of path the compiler recorded.
+    #[test]
+    fn a_panic_is_logged_by_place_only() {
+        for (file, place) in [
+            ("src/core/routes/files.rs", "src/core/routes/files.rs:365:9"),
+            ("src\\core\\routes\\files.rs", "src\\core\\routes\\files.rs:365:9"),
+            ("/build/.cargo/registry/src/index.crates.io-0000/tokio-1.53.3/src/runtime/task/harness.rs", "harness.rs:365:9"),
+            ("C:\\build\\.cargo\\registry\\src\\index.crates.io-0000\\tokio-1.53.3\\src\\runtime\\task\\harness.rs", "harness.rs:365:9"),
+            ("/rustc/0123456789abcdef/library/core/src/option.rs", "option.rs:365:9"),
+            ("/build/src/lanshare/src-tauri/src/lib.rs", "lib.rs:365:9"),
+            ("main.rs", "main.rs:365:9"),
+        ] {
+            assert_eq!(panic_place(file, 365, 9), place, "{file}");
+        }
     }
 }

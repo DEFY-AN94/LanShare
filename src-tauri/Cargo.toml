@@ -93,9 +93,14 @@ objc2-user-notifications = { version = "0.3.2", default-features = false, featur
     "UNNotificationTrigger",
     "UNUserNotificationCenter",
 ] }
+# Already in Cargo.lock through tauri-plugin-dialog: the alert when LanShare
+# cannot start, which may come before any window exists.
+rfd = { version = "0.16.0", default-features = false }
 
 [target."cfg(windows)".dependencies]
 # The clipboard on Windows (macOS reads the pasteboard natively).
 arboard = "3.7.0"
 png = "0.18.1"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Power", "Win32_System_Registry"] }
+# Win32_UI_WindowsAndMessaging: MessageBoxW for the alert when LanShare cannot
+# start, a single call that needs no common-controls manifest.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Power", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
