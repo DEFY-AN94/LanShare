@@ -1174,6 +1174,56 @@ async fn a_failed_start_names_no_path() {
     assert!(why.starts_with("create the default shared folder: ") && !why.contains("LOGMARK"), "{why}");
 }
 
+/// Runs `f` on a thread called `name`, which must panic.
+fn panic_on_thread(name: &str, f: impl FnOnce() + Send + 'static) {
+    let joined = std::thread::Builder::new().name(name.into()).spawn(f).unwrap().join();
+    assert!(joined.is_err(), "the thread should have panicked");
+}
+
+/// The captured log lines about a panic on the thread called `name`.
+fn panic_lines(logs: &Capture, name: &str) -> Vec<String> {
+    let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    text.lines().filter(|l| l.contains("panic at ") && l.contains(&format!("(thread {name})"))).map(str::to_string).collect()
+}
+
+/// The panic hook (core::logging) logs where a panic happened, never what it said.
+#[test]
+fn a_panic_is_logged_without_its_message() {
+    let logs = captured_logs();
+    super::logging::log_panics();
+    panic_on_thread("panic-check", || panic!("LOGMARK in a panic message"));
+    let lines = panic_lines(&logs, "panic-check");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    // This file, by its path in the source tree.
+    assert!(lines[0].contains("panic at src") && lines[0].contains("tests.rs:"), "{}", lines[0]);
+    let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    assert!(!text.contains("LOGMARK"), "a panic's message reached the log:\n{text}");
+}
+
+#[test]
+fn the_panic_hook_is_installed_once() {
+    let logs = captured_logs();
+    super::logging::log_panics();
+    super::logging::log_panics();
+    panic_on_thread("panic-twice", || panic!("a panic"));
+    assert_eq!(panic_lines(&logs, "panic-twice").len(), 1);
+}
+
+/// A panic while this thread holds the log file is not logged, since the hook
+/// would wait for the file; once the writer is left, panics are logged again.
+#[test]
+fn a_panic_while_writing_the_log_is_not_logged() {
+    let logs = captured_logs();
+    super::logging::log_panics();
+    panic_on_thread("panic-while-writing", || {
+        let inside = std::panic::catch_unwind(|| super::logging::while_writing(|| panic!("inside the log writer")));
+        assert!(inside.is_err());
+        panic!("after the log writer");
+    });
+    // Two lines if the first was logged, none if the flag stayed set.
+    assert_eq!(panic_lines(&logs, "panic-while-writing").len(), 1);
+}
+
 #[tokio::test]
 async fn static_shell_has_security_headers() {
     let e = env();
