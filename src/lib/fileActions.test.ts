@@ -1,7 +1,8 @@
-// Where a phone opens a file: the Home Screen app, or a Safari tab.
+// Where a phone opens a file (the Home Screen app, or a Safari tab), and what
+// the computer's window says when it only shows one in its folder.
 
 import { afterEach, expect, it, vi } from "vitest";
-import { fetchAsFile, fetchTextStart, inlineUrl, isStandalone } from "./fileActions";
+import { fetchAsFile, fetchTextStart, hostOpen, hostOpenMessageFile, inlineUrl, isStandalone } from "./fileActions";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -56,4 +57,26 @@ it("reads only the start of a text file, and nothing of an empty one", async () 
   expect(seen).toEqual(["bytes=0-1048575"]);
   vi.stubGlobal("fetch", () => Promise.resolve(new Response(null, { status: 416 })));
   expect((await fetchTextStart("/f")).length).toBe(0);
+});
+
+it("says why a file was only shown in its folder, and nothing when it opened", async () => {
+  vi.stubGlobal("window", { setTimeout, clearTimeout });
+  const asked: string[] = [];
+  let action = "revealed";
+  vi.stubGlobal("fetch", (url: string) => {
+    asked.push(url);
+    return Promise.resolve(Response.json({ action }));
+  });
+  const notify = vi.fn();
+  await hostOpen("收件箱/model.blend", notify);
+  await hostOpenMessageFile(7, notify);
+  expect(asked).toEqual(["/api/host/open", "/api/host/messages/7/open"]);
+  expect(notify.mock.calls).toEqual([
+    ["为了安全，只有常见的图片、视频、音频、PDF、文本、文档和压缩包会直接打开，这个文件已在文件夹中显示"],
+    ["为了安全，只有常见的图片、视频、音频、PDF、文本、文档和压缩包会直接打开，这个文件已在文件夹中显示"],
+  ]);
+  action = "opened";
+  await hostOpen("收件箱/photo.jpg", notify);
+  await hostOpenMessageFile(8, notify);
+  expect(notify).toHaveBeenCalledTimes(2);
 });

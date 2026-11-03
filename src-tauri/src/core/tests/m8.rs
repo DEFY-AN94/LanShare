@@ -323,20 +323,27 @@ async fn notification_buttons_copy_open_and_show() {
     assert_eq!(quick::copy_latest_received(state).unwrap(), "iPhone");
     assert_eq!(bridge.copied.lock().unwrap().last().unwrap(), &long);
 
-    // 打开: a document opens; something that would run or install is only shown in its folder.
+    // 打开: a document opens; something that would run or install, or a type
+    // not on the list, is only shown in its folder, and a notification says why.
     let pdf = phone_sends_file(&e, &cookie, "plan.pdf", b"%PDF").await;
     let exe = phone_sends_file(&e, &cookie, "setup.exe", b"MZ").await;
     let profile = phone_sends_file(&e, &cookie, "wifi.mobileconfig", b"<?xml").await;
-    quick::on_notification(state, quick::ACTION_OPEN, Some(pdf), Some(&id)).await;
-    quick::on_notification(state, quick::ACTION_OPEN, Some(exe), Some(&id)).await;
-    quick::on_notification(state, quick::ACTION_OPEN, Some(profile), Some(&id)).await;
+    let unknown = phone_sends_file(&e, &cookie, "model.blend", b"BLENDER").await;
+    let told = bridge.plain.lock().unwrap().len();
+    for msg in [pdf, exe, profile, unknown] {
+        quick::on_notification(state, quick::ACTION_OPEN, Some(msg), Some(&id)).await;
+    }
     let opened = bridge.opened.lock().unwrap().clone();
     assert_eq!(opened.iter().map(|(how, p)| (*how, p.file_name().unwrap().to_string_lossy().into_owned())).collect::<Vec<_>>(), [
         ("open", "plan.pdf".to_string()),
         ("reveal", "setup.exe".to_string()),
-        ("reveal", "wifi.mobileconfig".to_string())
+        ("reveal", "wifi.mobileconfig".to_string()),
+        ("reveal", "model.blend".to_string())
     ]);
-    for msg in [exe, profile] {
+    let why = bridge.plain.lock().unwrap()[told..].iter().map(|(_, body)| body.clone()).collect::<Vec<_>>();
+    assert_eq!(why, ["为了安全，这种文件不会直接打开，已在文件夹中显示"; 3], "once for each file only shown, nothing for the one opened");
+    assert_eq!(bridge.plain.lock().unwrap().last().map(|(t, _)| t.as_str()), Some("LanShare"));
+    for msg in [exe, profile, unknown] {
         let r = send(&e.local, host_req(Method::POST, &format!("/api/host/messages/{msg}/open"), Some(json!({})))).await;
         assert_eq!(r.json()["action"], "revealed");
     }
@@ -358,6 +365,30 @@ async fn notification_buttons_copy_open_and_show() {
     assert_eq!(bridge.plain.lock().unwrap().last().map(|(_, b)| b.as_str()), Some("这条消息已被删除"));
     quick::on_notification(state, quick::ACTION_COPY, Some(pdf), Some(&id)).await;
     assert_eq!(bridge.plain.lock().unwrap().last().map(|(_, b)| b.as_str()), Some("这条消息不是文字"));
+}
+
+/// The window's 用默认程序打开 and 在文件夹中打开 follow the notification's rule.
+#[tokio::test]
+async fn the_window_opens_documents_and_plain_folders_and_shows_the_rest() {
+    let (e, bridge) = recorded();
+    let root = e.state.sandbox().root().to_path_buf();
+    std::fs::create_dir(root.join("Photos")).unwrap();
+    std::fs::write(root.join("Photos/IMG_0001.HEIC"), b"heic").unwrap();
+    // Any extension may make a folder a package, so v1.2 is only shown too.
+    for dir in ["Tool.app", "v1.2"] {
+        std::fs::create_dir(root.join(dir)).unwrap();
+    }
+    std::fs::write(root.join("model.blend"), b"BLENDER").unwrap();
+    let mut answers = Vec::new();
+    for path in ["", "Photos", "Photos/IMG_0001.HEIC", "Tool.app", "model.blend", "v1.2"] {
+        let r = send(&e.local, host_req(Method::POST, "/api/host/open", Some(json!({ "path": path })))).await;
+        assert_eq!(r.status, StatusCode::OK, "{path:?}");
+        answers.push(r.json()["action"].as_str().unwrap().to_string());
+    }
+    assert_eq!(answers, ["opened", "opened", "opened", "revealed", "revealed", "revealed"], "the shared folder itself is named share");
+    let how = bridge.opened.lock().unwrap().iter().map(|(how, _)| *how).collect::<Vec<_>>();
+    assert_eq!(how, ["open", "open", "open", "reveal", "reveal", "reveal"]);
+    assert!(bridge.plain.lock().unwrap().is_empty(), "the window says why itself");
 }
 
 #[tokio::test]

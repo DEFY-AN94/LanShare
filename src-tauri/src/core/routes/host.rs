@@ -301,7 +301,8 @@ pub struct PathBody {
     path: String,
 }
 
-/// Opens with the default app; launchable files are revealed in the folder instead.
+/// Opens with the default app; what `quick::opens_directly` does not allow is
+/// revealed in its folder instead.
 pub async fn open(State(state): State<Shared>, Json(b): Json<PathBody>) -> ApiResult<Json<Value>> {
     let check = state.path_check().await;
     let path = state.usable_sandbox()?.resolve_existing(&b.path)?;

@@ -24,31 +24,34 @@ pub const ACTION_OPEN: &str = "open";
 pub const ACTION_SHOW: &str = "show";
 pub const ACTION_DISMISS: &str = "dismiss";
 
-/// Things the OS would *run*, mount or install rather than show (apps, scripts,
-/// installers, disk images, profiles, shortcuts). These are only revealed.
-pub(crate) fn is_launchable(path: &Path) -> bool {
-    const RISKY: &[&str] = &[
-        "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "fish", "pkg", "mpkg", "jar", "py", "rb", "pl", "php", "scpt",
-        "scptd", "applescript", "workflow", "action", "fileloc", "inetloc", "webloc", "prefpane", "kext", "plugin", "osax", "dylib", "exe",
-        "bat", "cmd", "com", "scr", "msi", "msp", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "lnk", "url", "reg",
-        "cpl", "msc", "appref-ms", "settingcontent-ms", "library-ms", "inf", "pif", "application", "gadget", "desktop", "appimage",
-        // Windows help files can run script; packages install; disk images mount.
-        "chm", "msix", "msixbundle", "appx", "appxbundle", "appinstaller", "iso", "img", "vhd", "vhdx",
-        // More Windows types that run, install or reach out when opened.
-        "pyw", "pyz", "pyzw", "msu", "ppkg", "searchconnector-ms", "search-ms", "website", "scf", "theme", "themepack", "deskthemepack",
-        "diagcab",
-        // macOS disk images mount; profiles, apps, screen savers and shortcuts install; Java Web Start runs.
-        "dmg", "udif", "dmgpart", "asif", "toast", "dvdr", "cdr", "sparseimage", "sparsebundle", "backupbundle", "mobileconfig",
-        "configprofile", "provisionprofile", "ipa", "saver", "shortcut", "jnlp",
-        // Certificates and keychains import on both systems; server locations connect out.
-        "cer", "crt", "cert", "der", "pem", "p7b", "p7c", "p12", "pkcs12", "pfx", "keychain", "keychain-db", "vncloc", "afploc",
-        "ftploc", "atloc",
-        // Windows remote desktop files connect out; sandbox files run a command; the rest run or install.
-        "rdp", "wsb", "xll", "wsc", "sct", "shb", "shs", "psc1", "msh", "mst", "xbap",
-    ];
-    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    if RISKY.contains(&ext.as_str()) {
-        return true;
+/// The types 打开 opens directly, in lowercase: the formats phones commonly
+/// send. Each opens in its own app, and Office and WPS apply their own checks
+/// to files that carry the download mark. Macro-enabled and slideshow formats
+/// (docm, xlsm, pptm, xlsb, dotm, pps, ppsx) are left out, because they exist
+/// to run macros or start a show.
+const OPENABLE: &[&str] = &[
+    // Pictures, videos and audio.
+    "jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "avif", "bmp", "tif", "tiff", "dng", "mov", "mp4", "m4v", "avi", "mkv", "webm",
+    "3gp", "wmv", "mpg", "mpeg", "mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "ogg", "opus", "wma", "amr", "caf",
+    // PDF, text and subtitles; Office, iWork, OpenDocument and WPS documents; e-books.
+    "pdf", "txt", "md", "csv", "tsv", "log", "json", "rtf", "srt", "vtt", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pages", "numbers",
+    "key", "odt", "ods", "odp", "wps", "et", "dps", "ofd", "epub",
+    // Archives.
+    "zip", "rar", "7z", "tar", "gz", "tgz",
+];
+
+/// Whether 打开 opens `path` with the default app. A file opens only when its
+/// type is on `OPENABLE`; any other file is only shown in its folder. The last
+/// extension decides, as it does for the system; on Unix a file marked
+/// executable is only shown too.
+pub(crate) fn opens_directly(path: &Path) -> bool {
+    let ext = path.extension();
+    // On a Mac an extension can make a folder an app, installer or disk image.
+    if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+        return ext.is_none();
+    }
+    if !ext.and_then(|e| e.to_str()).is_some_and(|e| OPENABLE.contains(&e.to_ascii_lowercase().as_str())) {
+        return false;
     }
     #[cfg(unix)]
     {
@@ -57,10 +60,10 @@ pub(crate) fn is_launchable(path: &Path) -> bool {
             && m.is_file()
             && m.permissions().mode() & 0o111 != 0
         {
-            return true;
+            return false;
         }
     }
-    false
+    true
 }
 
 /// The shell's error text quotes the path or link, which must not reach the log.
@@ -68,15 +71,15 @@ pub(crate) fn shell_failed() -> ApiError {
     ApiError::internal("the system could not open the item")
 }
 
-/// Opens with the default app; launchable files are revealed in the folder
-/// instead. Returns "opened" or "revealed". `check` was held since `path`
-/// was checked (`AppState::path_check`) and is let go once the system has it.
+/// Opens what `opens_directly` allows with the default app (a plain folder in
+/// Finder / File Explorer) and shows anything else in its folder. Returns
+/// "opened" or "revealed". `check` was held since `path` was checked
+/// (`AppState::path_check`) and is let go once the system has it.
 pub(crate) async fn open_or_reveal(state: &Shared, path: PathBuf, check: OwnedRwLockReadGuard<()>) -> ApiResult<&'static str> {
     let bridge = state.bridge.clone();
-    // Covers app bundles too (directories named *.app).
-    let reveal = is_launchable(&path);
-    checked_blocking(check, move || if reveal { bridge.reveal_path(&path) } else { bridge.open_path(&path) }).await?.map_err(|_| shell_failed())?;
-    Ok(if reveal { "revealed" } else { "opened" })
+    // Decided under `check` and off the async workers, since it reads the disk.
+    let open = move || if opens_directly(&path) { bridge.open_path(&path).map(|()| "opened") } else { bridge.reveal_path(&path).map(|()| "revealed") };
+    checked_blocking(check, open).await?.map_err(|_| shell_failed())
 }
 
 /// Where a message's attachment was saved, which may be an earlier shared
@@ -87,7 +90,8 @@ fn attachment(state: &Shared, message_id: i64) -> ApiResult<PathBuf> {
     state.attachment_path(&msg).ok_or_else(|| ApiError::not_found("文件已被移动或删除"))
 }
 
-/// Opens a message's attachment (launchable files are revealed instead).
+/// Opens a message's attachment (only what `opens_directly` allows opens;
+/// anything else is revealed).
 pub async fn open_attachment(state: &Shared, message_id: i64) -> ApiResult<&'static str> {
     let check = state.path_check().await;
     let path = attachment(state, message_id)?;
@@ -382,7 +386,11 @@ pub async fn on_notification(state: &Shared, action: &str, message_id: Option<i6
                 Some(id) => open_attachment(state, id).await.map_err(|e| e.message),
                 None => Err("这条消息已被删除".into()),
             };
-            report(state, result);
+            // The button says 打开, so say why only the folder came up.
+            match result {
+                Ok("revealed") => tell(state, "为了安全，这种文件不会直接打开，已在文件夹中显示", false),
+                other => report(state, other),
+            }
         }
         _ => {
             let device = device_id
@@ -398,8 +406,30 @@ pub async fn on_notification(state: &Shared, action: &str, message_id: Option<i6
 
 #[cfg(test)]
 mod tests {
-    use super::{check_shortcut, is_launchable};
+    use super::{OPENABLE, check_shortcut, opens_directly};
     use std::path::Path;
+
+    /// Types the system would run, mount or install rather than show. None
+    /// of them may ever open directly.
+    const RUNS_OR_INSTALLS: &[&str] = &[
+        "app", "command", "terminal", "tool", "sh", "bash", "zsh", "csh", "fish", "pkg", "mpkg", "jar", "py", "rb", "pl", "php", "scpt",
+        "scptd", "applescript", "workflow", "action", "fileloc", "inetloc", "webloc", "prefpane", "kext", "plugin", "osax", "dylib", "exe",
+        "bat", "cmd", "com", "scr", "msi", "msp", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "lnk", "url", "reg",
+        "cpl", "msc", "appref-ms", "settingcontent-ms", "library-ms", "inf", "pif", "application", "gadget", "desktop", "appimage",
+        // Windows help files can run script; packages install; disk images mount.
+        "chm", "msix", "msixbundle", "appx", "appxbundle", "appinstaller", "iso", "img", "vhd", "vhdx",
+        // More Windows types that run, install or reach out when opened.
+        "pyw", "pyz", "pyzw", "msu", "ppkg", "searchconnector-ms", "search-ms", "website", "scf", "theme", "themepack", "deskthemepack",
+        "diagcab",
+        // macOS disk images mount; profiles, apps, screen savers and shortcuts install; Java Web Start runs.
+        "dmg", "udif", "dmgpart", "asif", "toast", "dvdr", "cdr", "sparseimage", "sparsebundle", "backupbundle", "mobileconfig",
+        "configprofile", "provisionprofile", "ipa", "saver", "shortcut", "jnlp",
+        // Certificates and keychains import on both systems; server locations connect out.
+        "cer", "crt", "cert", "der", "pem", "p7b", "p7c", "p12", "pkcs12", "pfx", "keychain", "keychain-db", "vncloc", "afploc",
+        "ftploc", "atloc",
+        // Windows remote desktop files connect out; sandbox files run a command; the rest run or install.
+        "rdp", "wsb", "xll", "wsc", "sct", "shb", "shs", "psc1", "msh", "mst", "xbap",
+    ];
 
     #[test]
     fn shortcuts_need_two_modifiers_and_stay_off_the_system_ones() {
@@ -430,26 +460,73 @@ mod tests {
 
     #[test]
     fn files_that_run_or_mount_are_only_revealed() {
-        for name in [
-            "setup.exe", "run.ps1", "link.lnk", "help.chm", "HELP.CHM", "app.msix", "pkg.appx", "x.appinstaller", "disk.iso", "disk.img",
-            "disk.vhd", "disk.vhdx", "Tool.app", "x.sh", "x.pyw", "fix.diagcab", "update.msu", "x.scf", "dark.theme", "disk.dmg",
-            "DISK.DMG", "wifi.mobileconfig", "x.sparseimage", "ca.crt", "id.p12", "x.saver", "x.jnlp", "x.rdp", "x.configprofile",
-            "x.udif", "x.asif", "ca.pem", "ca.der", "x.p7b", "login.keychain-db", "x.vncloc", "x.wsb",
-        ] {
-            assert!(is_launchable(Path::new(name)), "{name}");
-        }
-        // .smi is a subtitle file today; no supported macOS mounts it.
-        for name in ["photo.jpg", "doc.pdf", "notes.txt", "movie.mov", "archive.zip", "subs.smi"] {
-            assert!(!is_launchable(Path::new(name)), "{name}");
+        for ext in RUNS_OR_INSTALLS {
+            for name in [format!("x.{ext}"), format!("X.{}", ext.to_ascii_uppercase())] {
+                assert!(!opens_directly(Path::new(&name)), "{name}");
+            }
         }
     }
 
     #[test]
-    fn a_disk_image_folder_is_only_revealed() {
-        // A phone can build one with mkdir and uploads; `open` would mount it.
+    fn a_type_not_on_the_list_is_only_revealed() {
+        // Unknown types, a trailing dot or space, a look-alike letter, an
+        // invisible character, the last of two extensions, a web page and a
+        // macro-enabled document.
+        for name in ["model.blend", "x.abc", "x.exe.", "x.exe ", "x.\u{435}x\u{435}", "x.jpg\u{200b}", "photo.jpg.exe", "page.html", "report.docm"] {
+            assert!(!opens_directly(Path::new(name)), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn documents_media_and_archives_open() {
+        for name in [
+            "photo.jpg", "IMG_0001.HEIC", "clip.MOV", "voice.m4a", "doc.pdf", "notes.txt", "report.docx", "Budget.XLSX", "slides.key",
+            "archive.zip", "backup.tar.gz", "x.exe.jpg",
+        ] {
+            assert!(opens_directly(Path::new(name)), "{name}");
+        }
+        for ext in OPENABLE {
+            for name in [format!("x.{ext}"), format!("X.{}", ext.to_ascii_uppercase())] {
+                assert!(opens_directly(Path::new(&name)), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_open_list_can_match_and_holds_nothing_that_runs() {
+        for (i, ext) in OPENABLE.iter().enumerate() {
+            // The lookup lowercases the extension, so anything else would never match.
+            assert!(!ext.is_empty() && ext.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()), "{ext}");
+            assert!(!OPENABLE[..i].contains(ext), "{ext} twice");
+            assert!(!RUNS_OR_INSTALLS.contains(ext), "{ext}");
+        }
+    }
+
+    #[test]
+    fn a_folder_opens_unless_its_name_has_an_extension() {
+        // A phone can build an app or a disk image this way with mkdir and
+        // uploads, and `open` would run or mount it.
         let dir = tempfile::tempdir().unwrap();
-        let bundle = dir.path().join("Disk.sparsebundle");
-        std::fs::create_dir(&bundle).unwrap();
-        assert!(is_launchable(&bundle));
+        for (name, opens) in [("Photos", true), ("Disk.sparsebundle", false), ("Tool.app", false), ("photos.zip", false), ("v1.2", false)] {
+            std::fs::create_dir(dir.path().join(name)).unwrap();
+            assert_eq!(opens_directly(&dir.path().join(name)), opens, "{name}");
+        }
+        // A file with no extension is only revealed, whether or not it exists.
+        std::fs::write(dir.path().join("tool"), "#!/bin/sh\n").unwrap();
+        assert!(!opens_directly(&dir.path().join("tool")));
+        assert!(!opens_directly(&dir.path().join("notes")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_marked_executable_is_only_revealed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "hi").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(opens_directly(&file));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!opens_directly(&file));
     }
 }
