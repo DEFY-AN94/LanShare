@@ -113,6 +113,7 @@ scripts/release_check.sh         检查发布标签和代码是否一致（docs/
 ## 数据位置
 
 - 应用数据（数据库、证书、配置）：macOS 在 `~/Library/Application Support/com.lanshare.desktop/`，Windows 在 `%APPDATA%\com.lanshare.desktop\`
+- `config.json` 读不出来时（比如断电后），LanShare 会把它改名为 `config.json.bad`，改用默认设置启动：共享先暂停，通知先不显示消息内容，设置页会提示；检查过设置后再恢复共享
 - 共享文件夹：默认 `~/LanShare`（Windows 是 `%USERPROFILE%\LanShare`），聊天里收到的文件在「收件箱」，发给手机的在「已发送」（这两个文件夹只在电脑上可见）
 - 日志：应用数据里的 `logs` 文件夹（设置 ›「打开日志文件夹」），最多约 10 MB，不会记录消息内容和文件名；排查问题时可以在设置里打开「详细日志」，重启 LanShare 后自动关闭
 - 聊天记录可以设为 30 天或 90 天后自动删除（设置 ›「自动删除旧聊天记录」）；删除的消息会从数据库文件里彻底清除，而不只是隐藏

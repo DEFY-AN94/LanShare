@@ -159,6 +159,14 @@ export function SettingsPage() {
       <h1>设置</h1>
 
       <section className="card">
+        {info.config_unreadable && (
+          <div className="banner banner-warn banner-block">
+            <Icon name="alert" size={16} />
+            <span>
+              这次启动时没能读取保存的设置，已改用默认设置：共享先暂停，通知先不显示消息内容。请检查共享文件夹等设置后再恢复共享。原来的设置文件已改名为 <code>config.json.bad</code>。
+            </span>
+          </div>
+        )}
         <div className="setting-row">
           <div>
             <div className="setting-title">{info.paused ? "共享已暂停" : "共享已开启"}</div>

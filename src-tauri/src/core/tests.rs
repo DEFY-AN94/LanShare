@@ -52,7 +52,7 @@ fn env_bridged(dir: tempfile::TempDir, preferred_root: Option<std::path::PathBuf
     let data_dir = dir.path().join("data");
     let sandbox = Sandbox::new(&dir.path().join("share")).unwrap();
     let tls = Tls::init(&dir.path().join("tls"), "test", None, &[]).unwrap();
-    let mut config = Config::load_or_default(&data_dir, dir.path());
+    let (mut config, config_unreadable) = Config::load_or_default(&data_dir, dir.path());
     config.shared_root = sandbox.root().to_path_buf();
     config.port = 53210;
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -63,6 +63,7 @@ fn env_bridged(dir: tempfile::TempDir, preferred_root: Option<std::path::PathBuf
         data_dir,
         home_dir: dir.path().to_path_buf(),
         config,
+        config_unreadable,
         sandbox,
         preferred_root,
         local_token: TOKEN.into(),
@@ -438,6 +439,7 @@ async fn earlier_chat_folders_stay_closed_after_a_folder_change() {
         data_dir: e.state.data_dir.clone(),
         home_dir: e.state.home_dir.clone(),
         config: Config { port: 1, ..Config::with_root(parent.clone()) },
+        config_unreadable: false,
         sandbox: Sandbox::new(&parent).unwrap(),
         preferred_root: None,
         local_token: TOKEN.into(),
@@ -1077,6 +1079,77 @@ async fn logs_never_contain_message_text_or_file_names() {
     assert!(text.contains("[notification]"), "the capture should see the server's log lines");
     assert!(text.contains("the shared folder is missing"));
     assert!(!text.contains("LOGMARK"), "a log line leaked message text or a file name:\n{text}");
+}
+
+/// A restart with a `config.json` holding `original`, in a folder whose path is never logged.
+fn start_with_config(original: &[u8]) -> Env {
+    let dir = tempfile::Builder::new().prefix("LOGMARK-").tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("data")).unwrap();
+    std::fs::write(dir.path().join("data").join("config.json"), original).unwrap();
+    env_in(dir)
+}
+
+fn saved_config(e: &Env) -> Config {
+    serde_json::from_slice(&std::fs::read(e.state.data_dir.join("config.json")).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn an_unreadable_config_starts_paused_and_says_so() {
+    let logs = captured_logs();
+    // serde's own message would quote "LOGMARK-port".
+    let original = br#"{"shared_root": "LOGMARK-folder", "paused": true, "port": "LOGMARK-port"}"#;
+    let e = start_with_config(original);
+    assert!(e.state.is_paused());
+    let overview = send(&e.local, host_req(Method::GET, "/api/host/overview", None)).await.json();
+    assert_eq!((&overview["paused"], &overview["config_unreadable"], &overview["notify_hide_text"]), (&json!(true), &json!(true), &json!(true)));
+    assert_eq!(std::fs::read(e.state.data_dir.join("config.json.bad")).unwrap(), original);
+    assert_eq!(send(&e.lan, dev_req(Method::GET, "/api/me", None, Body::empty(), false)).await.status, StatusCode::SERVICE_UNAVAILABLE);
+    // One that cannot be opened at all (here a folder) logs the read error, also without the path.
+    let dir = tempfile::Builder::new().prefix("LOGMARK-").tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("data").join("config.json")).unwrap();
+    let opened = env_in(dir);
+    assert!(opened.state.config_unreadable && opened.state.is_paused());
+    let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    assert!(text.contains("config.json could not be read (Data error at line 1 column "), "{text}");
+    assert!(!text.contains("LOGMARK"), "a log line leaked a value or a path from the config:\n{text}");
+    assert!(!env().state.config_unreadable, "a missing config.json is a first start");
+}
+
+#[tokio::test]
+async fn a_picked_folder_that_cannot_be_saved_changes_nothing() {
+    let (e, bridge) = m8::recorded();
+    let before = e.state.sandbox().root().to_path_buf();
+    let picked = e.state.home_dir.join("Picked");
+    std::fs::create_dir(&picked).unwrap();
+    *bridge.picked.lock().unwrap() = Some(picked.clone());
+    // A folder where the settings are written first makes every save fail.
+    let blocker = e.state.data_dir.join("config.json.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    let pick = || host_req(Method::POST, "/api/host/shared-root/pick", None);
+    assert_eq!(send(&e.local, pick()).await.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!((e.state.sandbox().root(), &e.state.config.lock().unwrap().shared_root), (before.as_path(), &before));
+
+    // The next change saves the settings as they are, with the folder still shared.
+    std::fs::remove_dir(&blocker).unwrap();
+    assert_eq!(send(&e.local, host_req(Method::POST, "/api/host/notifications", Some(json!({"hide_text": true})))).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(saved_config(&e).shared_root, before);
+    assert_eq!(send(&e.local, pick()).await.status, StatusCode::OK);
+    let picked = dunce::canonicalize(&picked).unwrap();
+    assert_eq!((e.state.sandbox().root(), saved_config(&e).shared_root), (picked.as_path(), picked.clone()));
+}
+
+/// Resuming after an unreadable start is saved, and the next start neither pauses nor shows the notice.
+#[tokio::test]
+async fn resuming_after_an_unreadable_config_lasts() {
+    let e = start_with_config(b"{\n  \"paused\": false,\n  \"port\": 392");
+    assert_eq!(send(&e.local, host_req(Method::POST, "/api/host/paused", Some(json!({"paused": false})))).await.status, StatusCode::OK);
+    assert!(!saved_config(&e).paused);
+    let Env { _dir: dir, .. } = e;
+    let e = env_in(dir);
+    assert!(!e.state.is_paused());
+    let overview = send(&e.local, host_req(Method::GET, "/api/host/overview", None)).await.json();
+    assert_eq!((&overview["paused"], &overview["config_unreadable"]), (&json!(false), &json!(false)));
+    assert_eq!(std::fs::read(e.state.data_dir.join("config.json.bad")).unwrap(), b"{\n  \"paused\": false,\n  \"port\": 392");
 }
 
 #[tokio::test]

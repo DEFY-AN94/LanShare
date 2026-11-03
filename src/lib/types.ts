@@ -112,6 +112,8 @@ export interface HostOverview {
   /** The local CA's name, as iPhone settings list it. */
   ca_name: string;
   paused: boolean;
+  /** config.json could not be read when LanShare started: the default settings are in use and sharing started paused. */
+  config_unreadable: boolean;
   version: string;
   network_warning: string | null;
   /** Automatic chat cleanup: messages older than this many days are deleted; 0 = off. */

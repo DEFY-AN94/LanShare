@@ -49,7 +49,7 @@
 | Development order (changed 2026-10-15) | Start with local Git and build the Mac version first; GitHub Actions and the Windows version come after you create the GitHub repository | The GitHub repository will be created later |
 | Roadmap after M6 (2026-10-20) | M6.1 → M7 → M8 → M9 (section 12); a milestone that needs real devices is accepted on them in one sitting, and hands-on Windows checks wait for the "Windows testing, later" list | Fix gaps in what LanShare already promises before adding features; the new auth path in M9 comes after the multi-device tests in M6.1 |
 | Windows testing (changed 2026-10-20) | No VM. Keep building Windows features and let CI build and test them; once a Windows PC is available, run the "Windows testing, later" list in section 12 in one pass | One combined check on real hardware instead of a VM |
-| Pause across restarts (2026-10-20) | If sharing was paused, it stays paused after LanShare restarts, and the phone and Settings show it clearly | Once launch at login exists, a forgotten pause should not quietly turn itself off |
+| Pause across restarts (2026-10-20) | If sharing was paused, it stays paused after LanShare restarts, and the phone and Settings show it clearly. A `config.json` that cannot be read is kept as `config.json.bad`, and LanShare starts with the default settings, paused and with message text left out of notifications, since it cannot tell what was lost | Once launch at login exists, a forgotten pause should not quietly turn itself off |
 | Automatic chat cleanup (2026-10-20) | Build it in M6.1: off / 30 days / 90 days | Section 7.2 already promises it |
 | Unsent text on the phone (2026-10-20) | Drafts and queued (not yet delivered) messages may be kept in Safari's local storage on the phone; they are deleted once sent, on unpairing and when the phone pairs again | iOS often reloads Home Screen apps after you switch away; this is only your own unsent text, on your own phone |
 | Deleting a file message (2026-10-20) | The attachment in 收件箱 (Inbox) / 已发送 (Sent) is kept by default; an option also moves it to the Trash / Recycle Bin | Deleting a message should not silently remove a file that may still matter |
@@ -360,6 +360,7 @@ SSE events:
 - The app data directory (`~/Library/Application Support/<id>/` on macOS, `%APPDATA%\<id>\` on Windows) contains:
   - `lanshare.db` (SQLite database)
   - `config.json` (shared folder path, port, pause state, chat cleanup period)
+  - `config.json.bad` (only after a `config.json` could not be read: that file as it was; LanShare then started with the default settings, paused)
   - `tls/` (certificates and private keys)
   - `logs/` (the log file, rotated, at most about 10 MB; from M6.1)
 - Tables:
@@ -616,6 +617,7 @@ Windows features are still built, and CI builds and tests every change on Window
 - From M6.1: the log file in `<data dir>\logs` and **打开日志文件夹** (Open log folder); a phone cannot reach 收件箱 / 已发送 through a junction or an 8.3 short name (the symlink test runs only on macOS, and no test covers 8.3 names; a Windows CI test would be better if the runner's disk has 8.3 names)
 - From M7: with a 1-minute idle-sleep setting, a 3-minute upload completes (`SetThreadExecutionState`); with the shared folder on a FAT32 USB stick, a file over 4 GB is refused
 - From M8: clicking a toast, or clicking it later in Action Center, opens that conversation; the toast's **复制** (Copy) and **打开** (Open) buttons and its sound; the unread count in the tray tooltip; the tray items that copy the latest text and send the clipboard (a screenshot arrives as a PNG; a file copied in Explorer is refused as a file); the shortcut recorder on a non-US layout; launch at login (Run key), still on after installing the next version over it with the default choice, and removed on uninstall. Record any differences from the Mac
+- A `config.json` cut off part way: LanShare starts paused, Settings shows the notice and `config.json.bad` holds the cut-off file; pausing from the tray still responds at once (each save now waits for the disk)
 - From M9: the `.local` URL either works or is not offered
 - Record the results in section 4.2, in the same format as the 4.1.1 table
 

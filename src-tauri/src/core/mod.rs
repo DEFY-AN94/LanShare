@@ -165,7 +165,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
     std::fs::create_dir_all(&opts.data_dir).with_context(|| format!("create {}", opts.data_dir.display()))?;
     logging::start_file(&opts.data_dir);
     guard::raise_fd_limit();
-    let mut config = Config::load_or_default(&opts.data_dir, &opts.home_dir);
+    let (mut config, config_unreadable) = Config::load_or_default(&opts.data_dir, &opts.home_dir);
     if let Some(root) = opts.shared_root {
         config.shared_root = root;
     }
@@ -200,6 +200,7 @@ pub async fn start(opts: StartOptions, bridge: Arc<dyn HostBridge>) -> Result<Se
         data_dir: opts.data_dir.clone(),
         home_dir: opts.home_dir.clone(),
         config,
+        config_unreadable,
         sandbox,
         preferred_root,
         local_token: util::random_token(),

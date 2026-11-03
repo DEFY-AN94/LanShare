@@ -132,6 +132,9 @@ pub struct HostOverview {
     /// The CA's name as iPhone settings list it.
     pub ca_name: String,
     pub paused: bool,
+    /// `config.json` could not be read when LanShare started: the default
+    /// settings are in use and sharing started paused.
+    pub config_unreadable: bool,
     pub version: String,
     pub network_warning: Option<String>,
     /// Automatic chat cleanup: messages older than this many days are deleted; 0 = off.

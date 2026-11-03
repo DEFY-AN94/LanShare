@@ -77,6 +77,9 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub home_dir: PathBuf,
     pub config: Mutex<Config>,
+    /// `config.json` could not be read at this start: the defaults are in
+    /// use, sharing started paused, and Settings says so until LanShare restarts.
+    pub config_unreadable: bool,
     sandbox: RwLock<Sandbox>,
     /// What the last check of the shared folder found (see `Sandbox::check_root`).
     root_status: Mutex<Result<(), Unavailable>>,
@@ -187,6 +190,7 @@ pub struct StateParts {
     pub data_dir: PathBuf,
     pub home_dir: PathBuf,
     pub config: Config,
+    pub config_unreadable: bool,
     pub sandbox: Sandbox,
     pub preferred_root: Option<PathBuf>,
     pub local_token: String,
@@ -224,6 +228,7 @@ impl AppState {
             data_dir: p.data_dir,
             home_dir: p.home_dir,
             config: Mutex::new(p.config),
+            config_unreadable: p.config_unreadable,
             sandbox: RwLock::new(p.sandbox),
             root_status: Mutex::new(Ok(())),
             preferred_root: Mutex::new(p.preferred_root),
@@ -438,6 +443,12 @@ impl AppState {
         *preferred = None;
         self.replace_sandbox(sb);
         true
+    }
+
+    /// Saves a folder picked in Settings as the shared folder. A save that
+    /// fails changes nothing, so no later save writes a folder that is not shared.
+    pub fn set_shared_root(&self, root: PathBuf) -> std::io::Result<()> {
+        self.change_config(|c| c.shared_root = root)
     }
 
     /// A folder picked in Settings replaces any preferred one.

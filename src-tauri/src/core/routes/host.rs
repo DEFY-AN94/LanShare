@@ -37,6 +37,7 @@ pub async fn overview(State(state): State<Shared>) -> Json<HostOverview> {
         ca_fingerprint: state.tls.ca_fingerprint(),
         ca_name: state.tls.ca_name(),
         paused: state.is_paused(),
+        config_unreadable: state.config_unreadable,
         version: env!("CARGO_PKG_VERSION").to_string(),
         network_warning: state.network_warning(),
         chat_retention_days: state.chat_retention_days(),
@@ -362,11 +363,7 @@ pub async fn pick_shared_root(State(state): State<Shared>, Extension(_s): Extens
     let sandbox = Sandbox::new(&dir)
         .map_err(|e| ApiError::bad_request(format!("无法使用这个文件夹：{e}")))?
         .with_deny(std::slice::from_ref(&state.data_dir));
-    {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.shared_root = sandbox.root().to_path_buf();
-        cfg.save(&state.data_dir).map_err(ApiError::internal)?;
-    }
+    state.set_shared_root(sandbox.root().to_path_buf()).map_err(ApiError::internal)?;
     state.set_sandbox(sandbox);
     crate::core::watch_shared_folder(&state);
     state.emit_files_changed("");

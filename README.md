@@ -115,6 +115,7 @@ scripts/release_check.sh         checks a release tag against the code (docs/rel
 ## Where data lives
 
 - App data (database, certificates, config): `~/Library/Application Support/com.lanshare.desktop/` on macOS, `%APPDATA%\com.lanshare.desktop\` on Windows.
+- If `config.json` cannot be read (for example after a power cut), LanShare renames it to `config.json.bad` and starts with the default settings, with sharing paused and message text left out of notifications; Settings says so. Check the settings, then resume sharing.
 - Shared folder: `~/LanShare` by default (`%USERPROFILE%\LanShare` on Windows). Files received in chat are saved to `收件箱` (Inbox) and files sent to the phone to `已发送` (Sent); these two folders are only visible on the computer.
 - Logs: the `logs` folder inside the app data folder (Settings › **打开日志文件夹** (Open log folder)), at most about 10 MB. They never record message text or file names; **详细日志** (Verbose logging) in Settings adds detail for troubleshooting until LanShare restarts.
 - Chat history can be deleted automatically after 30 or 90 days (Settings › **自动删除旧聊天记录** (Delete old chat history automatically)). Deleted messages are wiped from the database file, not just hidden.
