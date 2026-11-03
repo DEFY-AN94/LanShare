@@ -123,8 +123,9 @@ async fn an_upload_whose_folder_was_swapped_for_a_link_is_refused() {
 }
 
 /// A case-only rename keeps the folder: the upload still lands in it.
-/// (Windows refuses to rename a folder while a file in it is open.)
-#[cfg(not(windows))]
+/// (Windows refuses to rename a folder while a file in it is open, and on a
+/// case-sensitive file system, as on Linux, the rename makes a new name.)
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn an_upload_survives_a_case_only_rename_of_its_folder() {
     let e = env();

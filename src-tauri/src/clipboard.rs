@@ -7,6 +7,7 @@
 
 use crate::core::bridge::Clip;
 
+#[cfg(any(target_os = "macos", windows))]
 const NOTHING_TO_SEND: &str = "剪贴板里的内容不能发送，只能发送文字和图片";
 
 #[cfg(target_os = "macos")]
