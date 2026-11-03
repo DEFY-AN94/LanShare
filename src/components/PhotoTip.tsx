@@ -2,8 +2,9 @@
 // photo library makes iOS convert HEIC/HEVC/PNG; originals need the Files route.
 // Verified on a real iPhone (iOS 27): no <input accept> value avoids the conversion.
 
-import { useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { useBackdropClose } from "../lib/useBackdropClose";
+import { useModalFocus } from "../lib/useModalFocus";
 
 const KEY = "lanshare.photoTipSeen";
 
@@ -37,7 +38,6 @@ export function usePhotoTip(pick: () => void): { open: () => void; element: Reac
   const [visible, setVisible] = useState(false);
   const [dontShow, setDontShow] = useState(true);
   const pickRef = useRef(pick);
-  const backdrop = useBackdropClose(() => setVisible(false));
   pickRef.current = pick;
 
   const open = () => {
@@ -51,10 +51,22 @@ export function usePhotoTip(pick: () => void): { open: () => void; element: Reac
     pickRef.current();
   };
 
-  const element = visible ? (
+  const element = visible ? <PhotoTipDialog dontShow={dontShow} onDontShow={setDontShow} onCancel={() => setVisible(false)} onProceed={proceed} /> : null;
+
+  return { open, element };
+}
+
+function PhotoTipDialog(props: { dontShow: boolean; onDontShow: (v: boolean) => void; onCancel: () => void; onProceed: () => void }) {
+  const backdrop = useBackdropClose(props.onCancel);
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalFocus(ref, { onEscape: props.onCancel });
+  return (
     <div className="modal-backdrop" {...backdrop}>
-      <div className="modal dialog photo-tip" role="dialog" aria-modal="true">
-        <h2 className="dialog-title">从 iPhone 上传照片和视频</h2>
+      <div ref={ref} className="modal dialog photo-tip" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <h2 className="dialog-title" id={titleId}>
+          从 iPhone 上传照片和视频
+        </h2>
         <ul className="tip-list">
           <li>
             从<b>「照片图库」</b>选最快，但 iOS 会自动转换格式：HEIC 照片变 JPEG，HEVC 视频变 H.264，截图 PNG 变
@@ -67,20 +79,18 @@ export function usePhotoTip(pick: () => void): { open: () => void; element: Reac
           <li>ProRAW（DNG）照片和「文件」里的其他文件不受影响。</li>
         </ul>
         <label className="tip-check">
-          <input type="checkbox" checked={dontShow} onChange={(e) => setDontShow(e.target.checked)} />
+          <input type="checkbox" checked={props.dontShow} onChange={(e) => props.onDontShow(e.target.checked)} />
           <span>不再提示</span>
         </label>
         <div className="dialog-actions">
-          <button className="btn" onClick={() => setVisible(false)}>
+          <button className="btn" onClick={props.onCancel}>
             取消
           </button>
-          <button className="btn btn-primary" onClick={proceed}>
+          <button className="btn btn-primary" onClick={props.onProceed}>
             继续选择
           </button>
         </div>
       </div>
     </div>
-  ) : null;
-
-  return { open, element };
+  );
 }

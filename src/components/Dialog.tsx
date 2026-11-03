@@ -1,8 +1,9 @@
 // Promise-based confirm/prompt dialogs. We avoid window.confirm/prompt
 // because the desktop WebView does not implement them consistently.
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useBackdropClose } from "../lib/useBackdropClose";
+import { useModalFocus } from "../lib/useModalFocus";
 
 interface ConfirmOptions {
   title: string;
@@ -22,9 +23,15 @@ interface PromptOptions {
   selectStem?: boolean;
 }
 
-type Pending =
+type DialogRequest =
   | { type: "confirm"; opts: ConfirmOptions; resolve: (v: boolean) => void }
   | { type: "prompt"; opts: PromptOptions; resolve: (v: string | null) => void };
+type Pending = DialogRequest & { id: number };
+
+function settle(p: Pending, value: boolean | string | null) {
+  if (p.type === "confirm") p.resolve(value === true);
+  else p.resolve(typeof value === "string" ? value : null);
+}
 
 interface DialogApi {
   confirm: (opts: ConfirmOptions) => Promise<boolean>;
@@ -37,35 +44,47 @@ const DialogContext = createContext<DialogApi>({
 });
 
 export function DialogProvider({ children }: { children: ReactNode }) {
-  const [pending, setPending] = useState<Pending | null>(null);
+  // One dialog at a time: a request made while one is open waits its turn, so
+  // neither is answered before the user has seen it.
+  const [queue, setQueue] = useState<Pending[]>([]);
+  // Outside the state updater, which StrictMode runs twice.
+  const nextId = useRef(1);
 
-  const confirm = useCallback(
-    (opts: ConfirmOptions) => new Promise<boolean>((resolve) => setPending({ type: "confirm", opts, resolve })),
-    [],
-  );
-  const prompt = useCallback(
-    (opts: PromptOptions) => new Promise<string | null>((resolve) => setPending({ type: "prompt", opts, resolve })),
-    [],
-  );
+  const show = useCallback((r: DialogRequest) => {
+    const p = { ...r, id: nextId.current++ };
+    setQueue((q) => [...q, p]);
+  }, []);
+  const confirm = useCallback((opts: ConfirmOptions) => new Promise<boolean>((resolve) => show({ type: "confirm", opts, resolve })), [show]);
+  const prompt = useCallback((opts: PromptOptions) => new Promise<string | null>((resolve) => show({ type: "prompt", opts, resolve })), [show]);
 
-  const close = (value: boolean | string | null) => {
-    if (!pending) return;
-    if (pending.type === "confirm") pending.resolve(value === true);
-    else pending.resolve(typeof value === "string" ? value : null);
-    setPending(null);
-  };
+  const close = useCallback((p: Pending, value: boolean | string | null) => {
+    settle(p, value);
+    setQueue((q) => q.filter((x) => x !== p));
+  }, []);
 
+  const pending = queue[0];
   return (
     <DialogContext.Provider value={{ confirm, prompt }}>
       {children}
-      {pending && <DialogView pending={pending} onClose={close} />}
+      {pending && <DialogView key={pending.id} pending={pending} onClose={(v) => close(pending, v)} />}
     </DialogContext.Provider>
   );
 }
 
 function DialogView({ pending, onClose }: { pending: Pending; onClose: (v: boolean | string | null) => void }) {
   const [value, setValue] = useState(pending.type === "prompt" ? (pending.opts.initial ?? "") : "");
+  const ref = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+  const isPrompt = pending.type === "prompt";
+  const danger = pending.type === "confirm" && pending.opts.danger;
+  // A delete cannot be undone, so Enter there cancels unless the user moves to
+  // the button. This runs before the prompt's focus effect below, so it saves
+  // what had focus before the dialog opened.
+  useModalFocus(ref, { initial: isPrompt ? inputRef : danger ? cancelRef : confirmRef, onEscape: () => onClose(isPrompt ? null : false) });
 
   useEffect(() => {
     const input = inputRef.current;
@@ -76,33 +95,34 @@ function DialogView({ pending, onClose }: { pending: Pending; onClose: (v: boole
     else input.select();
   }, [pending]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose(pending.type === "confirm" ? false : null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pending, onClose]);
-
   const opts = pending.opts;
-  const isPrompt = pending.type === "prompt";
-  const danger = pending.type === "confirm" && pending.opts.danger;
+  const message = pending.type === "confirm" ? pending.opts.message : undefined;
   const submit = () => onClose(isPrompt ? value.trim() || null : true);
   const backdrop = useBackdropClose(() => onClose(isPrompt ? null : false));
 
   return (
     <div className="modal-backdrop" {...backdrop}>
       <form
+        ref={ref}
         className="modal dialog"
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={message ? messageId : undefined}
+        tabIndex={-1}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <h2 className="dialog-title">{opts.title}</h2>
-        {pending.type === "confirm" && pending.opts.message && <div className="dialog-message">{pending.opts.message}</div>}
+        <h2 className="dialog-title" id={titleId}>
+          {opts.title}
+        </h2>
+        {message && (
+          <div className="dialog-message" id={messageId}>
+            {message}
+          </div>
+        )}
         {isPrompt && (
           <label className="field">
             {(opts as PromptOptions).label && <span className="field-label">{(opts as PromptOptions).label}</span>}
@@ -119,10 +139,10 @@ function DialogView({ pending, onClose }: { pending: Pending; onClose: (v: boole
           </label>
         )}
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={() => onClose(isPrompt ? null : false)}>
+          <button ref={cancelRef} type="button" className="btn" onClick={() => onClose(isPrompt ? null : false)}>
             {pending.type === "confirm" ? (pending.opts.cancelText ?? "取消") : "取消"}
           </button>
-          <button type="submit" className={`btn ${danger ? "btn-danger" : "btn-primary"}`} disabled={isPrompt && !value.trim()}>
+          <button ref={confirmRef} type="submit" className={`btn ${danger ? "btn-danger" : "btn-primary"}`} disabled={isPrompt && !value.trim()}>
             {opts.confirmText ?? "确定"}
           </button>
         </div>

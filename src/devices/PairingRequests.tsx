@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useDialog } from "../components/Dialog";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { api } from "../lib/api";
 import { events } from "../lib/events";
 import type { LoginItemInfo, PairRequest } from "../lib/types";
+import { useModalFocus } from "../lib/useModalFocus";
 
 /** After the first pairing, offer launch at login once (it stays the user's choice). */
 async function suggestLoginItem(confirm: ReturnType<typeof useDialog>["confirm"]) {
@@ -62,21 +63,41 @@ export function PairingRequests() {
     }
   };
 
+  return <RequestDialog key={current.id} request={current} busy={busy} onDecide={(approve) => void decide(approve)} />;
+}
+
+/**
+ * It opens while the user may be typing elsewhere, so focus goes to the dialog
+ * itself and not to a button: a stray Enter neither allows nor refuses. Escape
+ * and the backdrop do not close it either; each request is decided.
+ */
+function RequestDialog({ request, busy, onDecide }: { request: PairRequest; busy: boolean; onDecide: (approve: boolean) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const hintId = useId();
+  const codeId = useId();
+  useModalFocus(ref);
   return (
     <div className="modal-backdrop">
-      <div className="modal dialog pairing-request" role="alertdialog" aria-modal="true">
+      <div ref={ref} className="modal dialog pairing-request" role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={`${hintId} ${codeId}`} tabIndex={-1}>
         <div className="pair-logo">
           <Icon name="phone" size={26} />
         </div>
-        <h2 className="dialog-title">「{current.name}」请求连接</h2>
-        <p className="muted">请确认手机上显示的确认码和下面一致</p>
-        <div className="confirm-code">{current.confirm_code}</div>
-        <p className="muted small">来自 {current.ip}</p>
+        <h2 className="dialog-title" id={titleId}>
+          「{request.name}」请求连接
+        </h2>
+        <p className="muted" id={hintId}>
+          请确认手机上显示的确认码和下面一致
+        </p>
+        <div className="confirm-code" id={codeId}>
+          {request.confirm_code}
+        </div>
+        <p className="muted small">来自 {request.ip}</p>
         <div className="dialog-actions">
-          <button className="btn" disabled={busy} onClick={() => void decide(false)}>
+          <button className="btn" disabled={busy} onClick={() => onDecide(false)}>
             拒绝
           </button>
-          <button className="btn btn-primary" disabled={busy} onClick={() => void decide(true)}>
+          <button className="btn btn-primary" disabled={busy} onClick={() => onDecide(true)}>
             允许
           </button>
         </div>

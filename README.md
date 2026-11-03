@@ -30,7 +30,7 @@ Closing the window keeps LanShare running in the background: in the menu bar and
 
 An iPhone with the computer's certificate installed and trusted never shows a certificate warning for LanShare; if one appears, close the page. After **重置证书** (Reset certificate) in Settings, every phone pairs again: delete the old certificate on the iPhone, then go through 添加设备 again. A Home Screen icon keeps the login it had when it was added, so delete it too and add it again from Safari after pairing. Old entries stay in the device list marked **需要重新配对** (Needs pairing again), with their chat history on the computer.
 
-When the computer cannot be reached (it is asleep, or the iPhone is on another network), the Home Screen app still opens and keeps trying to connect. Texts you send meanwhile wait on the iPhone and arrive once it reconnects, and an unsent draft survives closing the app. Tap a message to copy or delete it; a deleted message disappears on both sides. Deleting a file message keeps the file on the computer unless you choose to move it to the Trash.
+When the computer cannot be reached (it is asleep, or the iPhone is on another network), the Home Screen app still opens and keeps trying to connect. Texts you send meanwhile wait on the iPhone and arrive once it reconnects, and an unsent draft survives closing the app. Tap a message to copy or delete it; a deleted message disappears on both sides. In LanShare's window on the computer, a click on a text message only selects its text (double-click picks a word); to copy or delete it, right-click it or click the **⋯** next to it. Deleting a file message keeps the file on the computer unless you choose to move it to the Trash.
 
 In the Home Screen app, images, videos, audio and text files open in LanShare's own viewer; tap **关闭** (Close) to go back. **下载到「文件」** (Download to Files) reads the file from the computer; then tap **打开分享** (Open share sheet) and choose **Save to Files**. Files up to 200 MB can be saved this way, because the share sheet needs the whole file in the iPhone's memory; download larger ones in Safari. In Safari, previews open in a new tab and downloads go to Safari's downloads, as before.
 
@@ -78,6 +78,7 @@ Safari keeps one LanShare login per address, whatever the port. If the phone use
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust unit tests
+npm test                                          # frontend unit and component tests (vitest; components run in happy-dom)
 npx tsc                                           # frontend type check
 ```
 
