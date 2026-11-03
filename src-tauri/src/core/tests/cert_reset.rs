@@ -141,6 +141,22 @@ async fn a_root_made_at_the_upgrade_start_is_not_adopted() {
     assert!(needs_repair(&e, &id).await);
 }
 
+/// A server key that does not go with its certificate (a re-issue cut short)
+/// only costs a new server certificate under the same root.
+#[tokio::test]
+async fn a_damaged_server_key_at_startup_keeps_every_pairing() {
+    let e = env();
+    let cookie = pair(&e).await;
+    let id = device_id(&e, &cookie).await;
+    let before = e.state.tls.ca_fingerprint();
+    let Env { _dir: dir, .. } = e;
+    std::fs::write(dir.path().join("tls").join("server.key.pem"), rcgen::KeyPair::generate().unwrap().serialize_pem()).unwrap();
+    let e = env_in(dir);
+    assert_eq!(e.state.tls.ca_fingerprint(), before);
+    assert_eq!(me(&e, &cookie).await, StatusCode::OK);
+    assert!(!needs_repair(&e, &id).await);
+}
+
 /// A reset that wrote the new root but could not issue the server
 /// certificate (a full disk): devices pair again now, not only after the
 /// next start.
