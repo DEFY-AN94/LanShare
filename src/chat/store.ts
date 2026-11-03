@@ -312,9 +312,9 @@ async function postText(key: string, client_id: string, text: string) {
 
 /**
  * Keeps the screen on for `ms` while an attachment waits to be sent again,
- * then runs `then`: once the hold is let go, WebKit grants the lock again
- * only soon after a tap, so the next attempt would run without it. Texts
- * never hold the screen.
+ * and runs `then` before the hold is looked at again: once let go, WebKit
+ * grants the lock again only soon after a tap, so the next attempt would run
+ * without it. Texts never hold the screen.
  */
 function keepScreenFor(ms: number, then?: () => void) {
   retriesDue++;

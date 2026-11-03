@@ -95,7 +95,7 @@ export function holdScreen(): () => void {
   };
 }
 
-/** After files are chosen: time for the uploads to take the hold over (the file browser asks the computer first). */
+/** After files are chosen: time for the uploads to take the hold over. */
 const HANDOVER_MS = 10_000;
 /** A picker that never answers (no `cancel` event) lets go after this. */
 const PICKER_MAX_MS = 10 * 60_000;

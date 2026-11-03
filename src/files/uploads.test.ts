@@ -204,6 +204,8 @@ it("does not try a refused upload again, by itself or after a reconnect", async 
     ["failed", false],
     ["failed", false],
   ]);
+  // Nothing is left to send, so the screen is let go at once.
+  expect(h.release).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(30_000);
   h.emit("resync");
   windowListeners.get("online")!();

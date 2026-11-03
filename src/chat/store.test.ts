@@ -523,6 +523,30 @@ describe("keeping the screen on", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not take it for texts that wait for the connection either", async () => {
+    vi.useFakeTimers();
+    try {
+      h.events.state = "open";
+      const store = await freshStore();
+      await store.ensureLoaded("self", null);
+      // Both go out while connected and fail once the connection is gone.
+      // Two, as above: when the first wait ends the second still counts, so
+      // a text that kept the screen on would show.
+      let drop!: () => void;
+      const dropped = new Promise<void>((r) => (drop = r));
+      h.api.post.mockImplementation(() => dropped.then(() => Promise.reject(new h.ApiError(0, "连接不上电脑"))));
+      store.sendText("self", "slow computer");
+      store.sendText("self", "still slow");
+      h.events.state = "offline";
+      drop();
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(store.getConversation("self").pending.map((p) => p.status)).toEqual(["waiting", "waiting"]);
+      expect(h.holdScreen).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("changes made elsewhere", () => {
