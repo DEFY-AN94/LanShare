@@ -44,22 +44,30 @@ async function request<T>(method: string, path: string, body?: unknown, timeoutM
     payload = JSON.stringify(body);
   }
   const abort = new AbortController();
+  // Until the whole body is in: a connection can also die after the headers.
   const timer = window.setTimeout(() => abort.abort(), timeoutMs);
-  let res: Response;
   try {
-    res = await fetch(path, { method, headers, body: payload, credentials: "same-origin", cache: "no-store", signal: abort.signal });
-  } catch {
-    throw new ApiError(0, OFFLINE_MESSAGE);
+    let res: Response;
+    try {
+      res = await fetch(path, { method, headers, body: payload, credentials: "same-origin", cache: "no-store", signal: abort.signal });
+    } catch {
+      throw new ApiError(0, OFFLINE_MESSAGE);
+    }
+    if (!res.ok) {
+      if (res.status === 401) unauthorizedListeners.forEach((fn) => fn());
+      throw new ApiError(res.status, await errorMessage(res));
+    }
+    if (res.status === 204) return undefined as T;
+    const type = res.headers.get("content-type") ?? "";
+    if (!type.includes("application/json")) return undefined as T;
+    try {
+      return (await res.json()) as T;
+    } catch (e) {
+      throw e instanceof SyntaxError ? new ApiError(res.status, "服务器返回了无法识别的内容") : new ApiError(0, OFFLINE_MESSAGE);
+    }
   } finally {
     window.clearTimeout(timer);
   }
-  if (!res.ok) {
-    if (res.status === 401) unauthorizedListeners.forEach((fn) => fn());
-    throw new ApiError(res.status, await errorMessage(res));
-  }
-  if (res.status === 204) return undefined as T;
-  const type = res.headers.get("content-type") ?? "";
-  return (type.includes("application/json") ? await res.json() : undefined) as T;
 }
 
 export const api = {
