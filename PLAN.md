@@ -313,6 +313,7 @@ Other devices on the same Wi-Fi (roommates, guests, strangers on a public networ
   - Usage limited to server authentication (serverAuth)
   - Valid for 397 days, which meets Apple's requirements for trusted certificates
   - Reissued automatically 30 days before expiry, when the IP changes, or when the computer is renamed, and takes effect immediately (no restart needed)
+  - A server certificate or key that is missing or damaged at startup (for example after a re-issue was cut short) is reissued under the same root, so phones stay paired
 
 **The iPhone:**
 

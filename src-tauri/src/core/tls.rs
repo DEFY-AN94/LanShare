@@ -19,7 +19,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Once, RwLock};
+use std::sync::{Arc, Mutex, Once, RwLock};
 use time::{Duration, OffsetDateTime};
 use x509_parser::extensions::GeneralName;
 use x509_parser::pem::parse_x509_pem;
@@ -62,6 +62,9 @@ pub struct Tls {
     leaf_ips: RwLock<Vec<IpAddr>>,
     /// `init` had to make a new CA (none, or the one there was unusable).
     new_ca: bool,
+    /// Held while a server certificate is issued and loaded, so a re-issue
+    /// that loaded the old root cannot land after a reset.
+    issuing: Mutex<()>,
 }
 
 fn random_serial() -> SerialNumber {
@@ -102,6 +105,19 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Into place (key, then certificate) only once both are written: a failed
+/// write (a full disk) leaves the pair that was there. A stop between the two
+/// renames leaves a key that does not go with its certificate; `load_ca` then
+/// refuses the CA, and `ensure_leaf` replaces the server certificate.
+fn write_pair(key: &Path, key_pem: &str, cert: &Path, cert_pem: &str) -> Result<()> {
+    let (key_new, cert_new) = (key.with_extension("pem.new"), cert.with_extension("pem.new"));
+    write_private(&key_new, key_pem)?;
+    std::fs::write(&cert_new, cert_pem)?;
+    std::fs::rename(&key_new, key)?;
+    std::fs::rename(&cert_new, cert)?;
+    Ok(())
+}
+
 impl Tls {
     fn ca_cert_path(dir: &Path) -> PathBuf {
         dir.join("ca.pem")
@@ -132,8 +148,7 @@ impl Tls {
             }
         };
         let wanted = Self::wanted_ips(ips);
-        let (chain, key) = Self::ensure_leaf(dir, &ca_pem, &issuer, host_dns.as_deref(), &wanted, false)?;
-        let config = RustlsConfig::from_config(Arc::new(Self::server_config(&chain, &key)?));
+        let config = RustlsConfig::from_config(Self::ensure_leaf(dir, &ca_pem, &issuer, host_dns.as_deref(), &wanted, false)?);
         Ok(Tls {
             dir: dir.to_path_buf(),
             config,
@@ -141,6 +156,7 @@ impl Tls {
             leaf_dns: RwLock::new(host_dns),
             leaf_ips: RwLock::new(wanted),
             new_ca,
+            issuing: Mutex::new(()),
         })
     }
 
@@ -175,15 +191,14 @@ impl Tls {
     /// Re-issues the server certificate if the LAN addresses or the `.local`
     /// name changed. A name that is not usable (`None`) keeps the current one.
     pub fn ensure_names(&self, dns: Option<String>, ips: &[IpAddr]) -> Result<bool> {
+        let _issuing = self.issuing.lock().unwrap_or_else(|p| p.into_inner());
         let wanted = Self::wanted_ips(ips);
         let dns = dns.or_else(|| self.leaf_dns());
         if dns == self.leaf_dns() && wanted.iter().all(|ip| self.leaf_ips.read().unwrap().contains(ip)) {
             return Ok(false);
         }
-        let ca_pem = self.ca_pem();
-        let (_, issuer) = Self::load_ca(&self.dir)?;
-        let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, dns.as_deref(), &wanted, true)?;
-        self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
+        let (ca_pem, issuer) = Self::load_ca(&self.dir)?;
+        self.config.reload_from_config(Self::ensure_leaf(&self.dir, &ca_pem, &issuer, dns.as_deref(), &wanted, true)?);
         tracing::info!("server certificate re-issued for {} and {} addresses", dns.as_deref().unwrap_or("no .local name"), wanted.len());
         *self.leaf_dns.write().unwrap() = dns;
         *self.leaf_ips.write().unwrap() = wanted;
@@ -193,6 +208,7 @@ impl Tls {
     /// Re-issues the server certificate when it nears expiry (for apps that
     /// run for months without a restart).
     pub fn ensure_fresh(&self) -> Result<bool> {
+        let _issuing = self.issuing.lock().unwrap_or_else(|p| p.into_inner());
         let pem = std::fs::read_to_string(Self::leaf_cert_path(&self.dir))?;
         let (_, parsed) = parse_x509_pem(pem.as_bytes()).map_err(|e| anyhow::anyhow!("{e}"))?;
         let leaf = parsed.parse_x509().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -200,22 +216,21 @@ impl Tls {
             return Ok(false);
         }
         let ips = self.leaf_ips.read().unwrap().clone();
-        let (_, issuer) = Self::load_ca(&self.dir)?;
-        let (chain, key) = Self::ensure_leaf(&self.dir, &self.ca_pem(), &issuer, self.leaf_dns().as_deref(), &ips, true)?;
-        self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
+        let (ca_pem, issuer) = Self::load_ca(&self.dir)?;
+        self.config.reload_from_config(Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.leaf_dns().as_deref(), &ips, true)?);
         tracing::info!("server certificate renewed before expiry");
         Ok(true)
     }
 
     /// Throws away the CA and server certificate and starts fresh.
     pub fn reset(&self, host_label: &str, ips: &[IpAddr]) -> Result<()> {
+        let _issuing = self.issuing.lock().unwrap_or_else(|p| p.into_inner());
         let (ca_pem, issuer) = Self::create_ca(&self.dir, host_label)?;
         // On disk now, so the current one from here on, also if the server
         // certificate cannot be issued below (the next start issues it).
         *self.ca.write().unwrap() = CaInfo::new(ca_pem.clone())?;
         let wanted = Self::wanted_ips(ips);
-        let (chain, key) = Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.leaf_dns().as_deref(), &wanted, true)?;
-        self.config.reload_from_config(Arc::new(Self::server_config(&chain, &key)?));
+        self.config.reload_from_config(Self::ensure_leaf(&self.dir, &ca_pem, &issuer, self.leaf_dns().as_deref(), &wanted, true)?);
         *self.leaf_ips.write().unwrap() = wanted;
         Ok(())
     }
@@ -279,13 +294,7 @@ impl Tls {
         p.serial_number = Some(random_serial());
         let cert = p.self_signed(&key)?;
         let cert_pem = cert.pem();
-        // Into place only once both are written: a failed write (a full disk)
-        // leaves the CA that was there.
-        let (key_new, cert_new) = (dir.join("ca.key.pem.new"), dir.join("ca.pem.new"));
-        write_private(&key_new, &key.serialize_pem())?;
-        std::fs::write(&cert_new, &cert_pem)?;
-        std::fs::rename(&key_new, Self::ca_key_path(dir))?;
-        std::fs::rename(&cert_new, Self::ca_cert_path(dir))?;
+        write_pair(&Self::ca_key_path(dir), &key.serialize_pem(), &Self::ca_cert_path(dir), &cert_pem)?;
         // Any existing server certificate was signed by the old CA.
         let _ = std::fs::remove_file(Self::leaf_cert_path(dir));
         let issuer = Issuer::from_ca_cert_pem(&cert_pem, key)?;
@@ -308,7 +317,9 @@ impl Tls {
         Ok((cert_pem, issuer))
     }
 
-    /// Returns (chain PEM = leaf + CA, key PEM), re-issuing if needed or forced.
+    /// The server's TLS config: the leaf on disk while it fits (addresses,
+    /// name, expiry, CA) and its key goes with it, otherwise a new leaf.
+    /// Always a new one when forced.
     fn ensure_leaf(
         dir: &Path,
         ca_pem: &str,
@@ -316,12 +327,16 @@ impl Tls {
         host_dns: Option<&str>,
         ips: &[IpAddr],
         force: bool,
-    ) -> Result<(String, String)> {
+    ) -> Result<Arc<ServerConfig>> {
         if !force
             && let (Ok(cert), Ok(key)) = (std::fs::read_to_string(Self::leaf_cert_path(dir)), std::fs::read_to_string(Self::leaf_key_path(dir)))
             && Self::leaf_usable(&cert, ca_pem, host_dns, ips).unwrap_or(false)
         {
-            return Ok((format!("{cert}{ca_pem}"), key));
+            // A re-issue cut short can leave a key that does not go with the certificate.
+            match Self::server_config(&format!("{cert}{ca_pem}"), &key) {
+                Ok(config) => return Ok(Arc::new(config)),
+                Err(e) => tracing::warn!("existing server certificate unusable ({e:#}); issuing a new one"),
+            }
         }
         let mut p = CertificateParams::default();
         let mut dn = DistinguishedName::new();
@@ -345,9 +360,8 @@ impl Tls {
         let cert = p.signed_by(&key, issuer)?;
         let cert_pem = cert.pem();
         let key_pem = key.serialize_pem();
-        write_private(&Self::leaf_key_path(dir), &key_pem)?;
-        std::fs::write(Self::leaf_cert_path(dir), &cert_pem)?;
-        Ok((format!("{cert_pem}{ca_pem}"), key_pem))
+        write_pair(&Self::leaf_key_path(dir), &key_pem, &Self::leaf_cert_path(dir), &cert_pem)?;
+        Ok(Arc::new(Self::server_config(&format!("{cert_pem}{ca_pem}"), &key_pem)?))
     }
 
     pub(super) fn leaf_usable(leaf_pem: &str, ca_pem: &str, dns: Option<&str>, ips: &[IpAddr]) -> Result<bool> {
@@ -421,6 +435,117 @@ mod tests {
         assert_ne!(again.ca_fingerprint(), fp);
         let leaf = std::fs::read_to_string(dir.path().join("server.pem")).unwrap();
         assert!(Tls::leaf_usable(&leaf, &again.ca_pem(), Some("test-mac.local"), &[ip1]).unwrap());
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn a_damaged_server_key_or_certificate_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let ip: IpAddr = "192.168.1.20".parse().unwrap();
+        let (cert_path, key_path) = (Tls::leaf_cert_path(dir.path()), Tls::leaf_key_path(dir.path()));
+        let start = || Tls::init(dir.path(), "test", Some("mymac.local".into()), &[ip]).unwrap();
+        let first = start();
+        let (fp, ca) = (first.ca_fingerprint(), first.ca_pem());
+        for what in ["another key", "empty key", "cut-short key", "empty certificate"] {
+            let before = read(&cert_path);
+            match what {
+                "another key" => std::fs::write(&key_path, KeyPair::generate().unwrap().serialize_pem()).unwrap(),
+                "empty key" => std::fs::write(&key_path, "").unwrap(),
+                "cut-short key" => std::fs::write(&key_path, &read(&key_path)[..100]).unwrap(),
+                _ => std::fs::write(&cert_path, "").unwrap(),
+            }
+            // Starts, with a new server certificate under the same root.
+            let t = start();
+            assert_eq!(t.ca_fingerprint(), fp, "{what}");
+            assert!(!t.made_new_ca(), "{what}");
+            let (cert, key) = (read(&cert_path), read(&key_path));
+            assert_ne!(cert, before, "{what}");
+            assert!(Tls::leaf_usable(&cert, &ca, Some("mymac.local"), &[ip]).unwrap(), "{what}");
+            assert!(Tls::server_config(&format!("{cert}{ca}"), &key).is_ok(), "{what}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777, 0o600, "{what}");
+            }
+            // And the next start keeps it.
+            start();
+            assert_eq!(read(&cert_path), cert, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_server_certificate_there_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ip, ip2): (IpAddr, IpAddr) = ("192.168.1.20".parse().unwrap(), "192.168.1.21".parse().unwrap());
+        let (cert_path, key_path) = (Tls::leaf_cert_path(dir.path()), Tls::leaf_key_path(dir.path()));
+        let t = Tls::init(dir.path(), "test", None, &[ip]).unwrap();
+        let (cert, key) = (read(&cert_path), read(&key_path));
+        let blocked = dir.path().join("server.pem.new");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(t.ensure_names(None, &[ip, ip2]).is_err());
+        assert_eq!((read(&cert_path), read(&key_path)), (cert.clone(), key));
+        // Still a key and certificate that go together: the next start keeps them.
+        Tls::init(dir.path(), "test", None, &[ip]).unwrap();
+        assert_eq!(read(&cert_path), cert);
+
+        std::fs::remove_dir(&blocked).unwrap();
+        assert!(t.ensure_names(None, &[ip, ip2]).unwrap());
+        let (cert, key) = (read(&cert_path), read(&key_path));
+        assert!(Tls::leaf_usable(&cert, &t.ca_pem(), None, &[ip, ip2]).unwrap());
+        assert!(Tls::server_config(&format!("{cert}{}", t.ca_pem()), &key).is_ok());
+        assert!(!blocked.exists() && !dir.path().join("server.key.pem.new").exists());
+    }
+
+    #[test]
+    fn resets_and_reissues_take_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ip, ip2): (IpAddr, IpAddr) = ("192.168.1.20".parse().unwrap(), "192.168.1.21".parse().unwrap());
+        let t = Tls::init(dir.path(), "test", Some("mymac.local".into()), &[ip]).unwrap();
+        let fp = t.ca_fingerprint();
+        std::thread::scope(|s| {
+            // Taken in here, so a failed assert lets them go before `scope` joins them.
+            let issuing = t.issuing.lock().unwrap();
+            let reset = s.spawn(|| t.reset("test", &[ip]));
+            let names = s.spawn(|| t.ensure_names(None, &[ip, ip2]));
+            let fresh = s.spawn(|| t.ensure_fresh());
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(!reset.is_finished() && !names.is_finished() && !fresh.is_finished());
+            drop(issuing);
+            reset.join().unwrap().unwrap();
+            assert!(names.join().unwrap().unwrap());
+            assert!(!fresh.join().unwrap().unwrap());
+        });
+        assert_ne!(t.ca_fingerprint(), fp);
+        let (cert, key) = (read(&Tls::leaf_cert_path(dir.path())), read(&Tls::leaf_key_path(dir.path())));
+        assert!(Tls::leaf_usable(&cert, &t.ca_pem(), Some("mymac.local"), &[ip]).unwrap());
+        assert!(Tls::server_config(&format!("{cert}{}", t.ca_pem()), &key).is_ok());
+    }
+
+    /// The root is loaded after the wait: a re-issue held up by a reset signs
+    /// with the root the reset left, not the one before it.
+    #[test]
+    fn a_reissue_waiting_for_a_reset_uses_the_new_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ip, ip2): (IpAddr, IpAddr) = ("192.168.1.20".parse().unwrap(), "192.168.1.21".parse().unwrap());
+        let t = Tls::init(dir.path(), "test", Some("mymac.local".into()), &[ip]).unwrap();
+        let old = t.ca_pem();
+        std::thread::scope(|s| {
+            let issuing = t.issuing.lock().unwrap();
+            let names = s.spawn(|| t.ensure_names(None, &[ip, ip2]));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            assert!(!names.is_finished());
+            // What a reset that finished meanwhile leaves on disk.
+            Tls::write_ca(dir.path(), KeyPair::generate().unwrap(), "LanShare Local CA (test) A1B2C3").unwrap();
+            drop(issuing);
+            assert!(names.join().unwrap().unwrap());
+        });
+        let (new, leaf) = (read(&Tls::ca_cert_path(dir.path())), read(&Tls::leaf_cert_path(dir.path())));
+        assert_ne!(new, old);
+        assert!(Tls::leaf_usable(&leaf, &new, Some("mymac.local"), &[ip, ip2]).unwrap());
+        assert!(!Tls::leaf_usable(&leaf, &old, Some("mymac.local"), &[ip, ip2]).unwrap());
     }
 
     #[test]
