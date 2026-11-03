@@ -1104,6 +1104,11 @@ async fn an_unreadable_config_starts_paused_and_says_so() {
     assert_eq!((&overview["paused"], &overview["config_unreadable"], &overview["notify_hide_text"]), (&json!(true), &json!(true), &json!(true)));
     assert_eq!(std::fs::read(e.state.data_dir.join("config.json.bad")).unwrap(), original);
     assert_eq!(send(&e.lan, dev_req(Method::GET, "/api/me", None, Body::empty(), false)).await.status, StatusCode::SERVICE_UNAVAILABLE);
+    // One that cannot be opened at all (here a folder) logs the read error, also without the path.
+    let dir = tempfile::Builder::new().prefix("LOGMARK-").tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("data").join("config.json")).unwrap();
+    let opened = env_in(dir);
+    assert!(opened.state.config_unreadable && opened.state.is_paused());
     let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
     assert!(text.contains("config.json could not be read (Data error at line 1 column "), "{text}");
     assert!(!text.contains("LOGMARK"), "a log line leaked a value or a path from the config:\n{text}");
