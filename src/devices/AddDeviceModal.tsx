@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { CopyButton } from "../chat/MessageBubble";
@@ -7,6 +7,7 @@ import { events } from "../lib/events";
 import { fingerprintRows } from "../lib/format";
 import type { CertSetup, PairingSession, PairingUrl } from "../lib/types";
 import { useBackdropClose } from "../lib/useBackdropClose";
+import { useModalFocus } from "../lib/useModalFocus";
 
 /**
  * 添加设备 in two steps: install this computer's root certificate on the
@@ -71,15 +72,18 @@ export function AddDeviceModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   const backdrop = useBackdropClose(onClose);
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useModalFocus(ref, { onEscape: onClose });
   const urls = (step === "cert" ? setup?.urls : session?.urls) ?? [];
   const current = urls.find((u) => u.ip === ip) ?? urls[0];
   const warning = setup?.network_warning ?? session?.network_warning;
 
   return (
     <div className="modal-backdrop" {...backdrop}>
-      <div className="modal add-device" role="dialog" aria-modal="true">
+      <div ref={ref} className="modal add-device" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="modal-head">
-          <h2>添加设备</h2>
+          <h2 id={titleId}>添加设备</h2>
           <button className="icon-btn" aria-label="关闭" onClick={onClose}>
             <Icon name="x" />
           </button>

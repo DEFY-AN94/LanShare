@@ -226,6 +226,7 @@ Key points:
 - Bubble layout: your own messages on the right (blue), the other side's on the left; grouped by time; send status shown (sending / delivered / failed, with retry)
 - **Copy button**: every text message has a small, always-visible button next to it. One tap copies the text, the icon turns into ✓, and a **已复制** (Copied) toast appears; long-press to select only part of the text
 - Links are clickable (only http / https are recognized); long text and code are shown in a monospace font
+- A text message's actions (**复制** / **删除**, Copy / Delete): on the iPhone, tap the bubble. In the desktop window a click only selects text (a double-click picks a word), so the actions are on the **⋯** button next to the bubble (shown on hover or keyboard focus) and on right-click. A right-click on a link, or on a message with text selected in it, keeps the system menu
 - History loads in pages; after a disconnect the client reconnects automatically and fills in the messages it missed; failed sends are queued and resent automatically (deduplicated by client_id)
 - Desktop app: drag a file into the chat window to send it; paste a screenshot to send it directly; incoming messages show a system notification
 - Image messages show a preview. File messages show the file name and size: on the iPhone, tapping one downloads / previews it; on the computer, clicking one opens it in the default app or shows it in its folder
@@ -260,6 +261,7 @@ Key points:
 - Devices: device list + Add device (QR code panel)
 - Settings: shared folder location, LAN address and port, certificate fingerprint, **暂停共享** (Pause sharing) toggle, reset certificate, clear chat history
 - Closing the window keeps the app running in the background: on macOS, click the Dock icon to bring it back; on Windows, restore it from the tray
+- Dialogs and sheets take keyboard focus when they open, keep Tab inside, close with Escape and give focus back when they close. A confirm that deletes or resets something starts on **取消** (Cancel), so Enter cancels it; Tab moves to the button that does it. A pairing request starts on the dialog itself, so a stray Enter neither allows nor refuses, and only its buttons close it. A confirm asked for while another dialog is open waits until that one is answered
 
 **iPhone web page**: two tabs at the bottom, Messages / Files
 
@@ -668,7 +670,7 @@ Each milestone adds here what the Simulator cannot show. Record the results in s
 - **Automated tests** (run in CI on both macOS and Windows):
   - Rust unit tests
   - API integration tests: start a real server in a temporary directory; cover pairing, auth, messages, files, Range and all kinds of error cases
-  - Frontend type checking; frontend unit tests (vitest, from M7)
+  - Frontend type checking; frontend unit and component tests (vitest, from M7; components run in happy-dom)
 - **iOS Simulator** (I can run it directly on this Mac): at the end of each milestone, walk through the iPhone web flows and take screenshots to check them
 - **Real iPhone** (needs your help): once each at M0, M4 and M5; then the 15-minute iPhone check (done 2026-10-20) and M7 (done 2026-10-21). From M8 on, milestones are accepted in the iOS Simulator, and the real-iPhone checks are done in one pass at the end ("Real iPhone testing, later" in section 12)
 - **Windows PC** (later, with the real iPhone): the "Windows testing, later" list in section 12, in one pass of about 1.5 hours

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { browserDownload, browserPreview, canShareFiles, fetchTextStart, inlineUrl, isStandalone, TEXT_LIMIT } from "../lib/fileActions";
 import { decodeText, formatBytes, isPreviewable, viewKind, type ViewKind } from "../lib/format";
+import { useModalFocus } from "../lib/useModalFocus";
 import { ShareSheet } from "./ShareSheet";
 
 export interface FileTarget {
@@ -90,11 +91,9 @@ function FileViewer({ target, kind, onSave, onClose }: ViewerProps) {
     };
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // With the save sheet open over the viewer, Escape closes only the sheet.
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(ref, { onEscape: onClose });
 
   const fail = () => setFailed(true);
   const keep = (m: HTMLMediaElement | null) => {
@@ -108,7 +107,7 @@ function FileViewer({ target, kind, onSave, onClose }: ViewerProps) {
   else body = <audio ref={keep} src={src} controls preload="metadata" onError={fail} />;
 
   return (
-    <div className="viewer" role="dialog" aria-modal="true" aria-label={target.name}>
+    <div ref={ref} className="viewer" role="dialog" aria-modal="true" aria-label={target.name} tabIndex={-1}>
       <div className="viewer-bar">
         <span className="viewer-title ellipsis">{target.name}</span>
         <button className="btn viewer-close" onClick={onClose}>

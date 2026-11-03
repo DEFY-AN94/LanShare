@@ -1,9 +1,10 @@
-import { memo, useState, type MouseEvent } from "react";
+import { memo, useRef, useState, type MouseEvent } from "react";
 import { Icon } from "../components/Icon";
 import { useToast } from "../components/Toast";
 import { copyText } from "../lib/clipboard";
 import { canShareFiles, hostOpenMessageFile, hostOpenUrl, hostRevealMessageFile } from "../lib/fileActions";
 import { fileCategory, formatBytes, formatDayTime, isInlineImage, splitLinks } from "../lib/format";
+import { coarsePointer } from "../lib/pointer";
 import type { Message } from "../lib/types";
 import type { PendingMessage } from "./useConversation";
 
@@ -86,15 +87,20 @@ interface BubbleProps {
   onActions: (m: Message) => void;
 }
 
-/** A tap on the bubble opens its actions, but not a tap on a link or one that ends a text selection. */
-function tapOpensActions(e: MouseEvent): boolean {
-  if ((e.target as HTMLElement).closest("a")) return false;
-  return !window.getSelection()?.toString();
-}
+// On the iPhone a tap on the bubble opens its actions, but not a tap on a link
+// or one that ends a text selection. With a mouse a click only selects (a
+// double-click picks a word), so the actions are on the ⋯ button and on
+// right-click; a right-click on a link, or on a bubble with text selected in
+// it, keeps the system menu.
+const hasSelection = () => !!window.getSelection()?.toString();
+const onLink = (e: MouseEvent) => !!(e.target as HTMLElement).closest("a");
 
 export const MessageBubble = memo(function MessageBubble({ message: m, mine, isHost, onMediaLoad, onShare, onOpenFile, onActions }: BubbleProps) {
   const toast = useToast();
   const [imgFailed, setImgFailed] = useState(false);
+  // Read when the button goes down: a Mac selects the word under a right-click
+  // before the menu event arrives.
+  const selectedBefore = useRef(false);
   const title = formatDayTime(m.created_at);
 
   if (m.kind === "text") {
@@ -102,10 +108,28 @@ export const MessageBubble = memo(function MessageBubble({ message: m, mine, isH
     const longOrCode = text.includes("\n") && /[{};<>=]|^\s{2,}/m.test(text);
     return (
       <div className={`msg-row ${mine ? "mine" : "theirs"}`}>
-        <div className={`bubble ${longOrCode ? "bubble-mono" : ""}`} title={title} onClick={(e) => tapOpensActions(e) && onActions(m)}>
+        <div
+          className={`bubble ${longOrCode ? "bubble-mono" : ""}`}
+          title={title}
+          onClick={(e) => coarsePointer() && !onLink(e) && !hasSelection() && onActions(m)}
+          onPointerDown={(e) => {
+            // Only a selection in this bubble keeps the system menu, whose Copy copies the selection.
+            const sel = window.getSelection();
+            selectedBefore.current = !!sel?.rangeCount && !!sel.toString() && sel.getRangeAt(0).intersectsNode(e.currentTarget);
+          }}
+          onContextMenu={(e) => {
+            if (coarsePointer() || onLink(e) || selectedBefore.current) return;
+            e.preventDefault();
+            window.getSelection()?.removeAllRanges();
+            onActions(m);
+          }}
+        >
           <LinkedText text={text} isHost={isHost} />
         </div>
         <CopyButton text={text} />
+        <button className="copy-btn msg-more" aria-label="更多操作" title="更多操作" onClick={() => onActions(m)}>
+          <Icon name="more" size={16} />
+        </button>
       </div>
     );
   }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { usePhotoTip } from "../components/PhotoTip";
 import { useToast } from "../components/Toast";
+import { coarsePointer } from "../lib/pointer";
 import { loadLocal, removeLocal, saveLocal } from "../lib/storage";
 import { openPicker } from "../lib/wakeLock";
 
@@ -20,7 +21,6 @@ interface Props {
 }
 
 const MAX_TEXT = 100_000;
-const coarsePointer = () => window.matchMedia("(pointer: coarse)").matches;
 /** Drafts survive switching tabs or conversations. */
 const drafts = new Map<string, string>();
 const storageKey = (key: string) => `draft.${key}`;

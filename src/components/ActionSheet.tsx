@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useId, useRef } from "react";
 import { Icon } from "./Icon";
 import { useBackdropClose } from "../lib/useBackdropClose";
+import { useModalFocus } from "../lib/useModalFocus";
 
 export interface SheetAction {
   label: string;
@@ -19,25 +20,38 @@ interface Props {
 /** Bottom sheet on phones, small centered menu on desktop (see .sheet in CSS). */
 export function ActionSheet({ title, subtitle, actions, onClose }: Props) {
   const backdrop = useBackdropClose(onClose);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const ref = useRef<HTMLDivElement>(null);
+  const first = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  // Focus starts on the first action that deletes nothing, else on 取消.
+  const firstSafe = actions.findIndex((a) => !a.danger);
+  useModalFocus(ref, { initial: first, onEscape: onClose });
 
   return (
     <div className="modal-backdrop sheet-backdrop" {...backdrop}>
-      <div className="sheet" role="menu">
+      <div
+        ref={ref}
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        aria-label={title ? undefined : "更多操作"}
+        tabIndex={-1}
+      >
         {(title || subtitle) && (
           <div className="sheet-header">
-            {title && <div className="sheet-title ellipsis">{title}</div>}
+            {title && (
+              <div className="sheet-title ellipsis" id={titleId}>
+                {title}
+              </div>
+            )}
             {subtitle && <div className="sheet-subtitle">{subtitle}</div>}
           </div>
         )}
-        {actions.map((a) => (
+        {actions.map((a, i) => (
           <button
             key={a.label}
-            role="menuitem"
+            ref={i === firstSafe ? first : undefined}
             className={`sheet-item ${a.danger ? "text-danger" : ""}`}
             onClick={() => {
               onClose();
@@ -48,7 +62,7 @@ export function ActionSheet({ title, subtitle, actions, onClose }: Props) {
             <span>{a.label}</span>
           </button>
         ))}
-        <button className="sheet-item sheet-cancel" onClick={onClose}>
+        <button ref={firstSafe < 0 ? first : undefined} className="sheet-item sheet-cancel" onClick={onClose}>
           取消
         </button>
       </div>

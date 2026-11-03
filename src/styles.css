@@ -383,6 +383,12 @@ h2 {
 }
 
 /* ---------- modals & sheets ---------- */
+/* A dialog takes focus itself only so that keys reach it; it is not a control. */
+.modal:focus,
+.sheet:focus,
+.viewer:focus {
+  outline: none;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1121,6 +1127,10 @@ h2 {
   color: #fff;
   background: var(--success);
 }
+/* With a mouse a click on a bubble only selects text, so its actions are under ⋯. */
+.msg-more {
+  display: none;
+}
 @media (pointer: fine) {
   .msg-row .copy-btn {
     opacity: 0.55;
@@ -1128,6 +1138,18 @@ h2 {
   .msg-row:hover .copy-btn,
   .copy-btn.is-copied {
     opacity: 1;
+  }
+  .msg-row .msg-more {
+    display: inline-flex;
+    opacity: 0;
+  }
+  .msg-row:hover .msg-more,
+  .msg-more:focus-visible {
+    opacity: 1;
+  }
+  /* A mouse needs no wider target, and it would cover the edge of 复制. */
+  .msg-row .msg-more::before {
+    content: none;
   }
 }
 

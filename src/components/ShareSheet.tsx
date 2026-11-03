@@ -2,11 +2,12 @@
 // file first, then call navigator.share from a fresh tap (iOS rejects share()
 // once the original tap has expired, about 3 s after it).
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { fetchAsFile, SHARE_LIMIT } from "../lib/fileActions";
 import { formatBytes } from "../lib/format";
 import { useBackdropClose } from "../lib/useBackdropClose";
+import { useModalFocus } from "../lib/useModalFocus";
 import { useToast } from "./Toast";
 
 interface Props {
@@ -29,6 +30,10 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
   const toast = useToast();
   const tooLarge = purpose === "files" && size > SHARE_LIMIT;
   const backdrop = useBackdropClose(onClose);
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  // Focus starts on the dialog itself: 打开分享 is disabled until the file is read.
+  useModalFocus(ref, { onEscape: onClose });
 
   useEffect(() => {
     if (tooLarge) return;
@@ -68,8 +73,10 @@ export function ShareSheet({ url, name, mime, size, purpose = "photos", onClose 
 
   return (
     <div className="modal-backdrop" {...backdrop}>
-      <div className="modal dialog" role="dialog" aria-modal="true">
-        <h2 className="dialog-title">{purpose === "files" ? "下载到「文件」" : "存储到相册 / 分享"}</h2>
+      <div ref={ref} className="modal dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <h2 className="dialog-title" id={titleId}>
+          {purpose === "files" ? "下载到「文件」" : "存储到相册 / 分享"}
+        </h2>
         <div className="dialog-message">
           <div className="ellipsis">{name}</div>
           <div className="muted">{formatBytes(size)}</div>
