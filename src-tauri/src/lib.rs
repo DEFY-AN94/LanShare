@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use anyhow::Context;
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
@@ -305,76 +306,14 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // First: on macOS the login-item flag is only readable right now.
-            let hidden_reason = hidden_start_reason();
-            let hidden = hidden_reason.is_some();
-            // Before the server starts: a click on a notification that relaunched
-            // LanShare is delivered right after this returns, and waits until then.
-            #[cfg(target_os = "macos")]
-            mac_notify::install();
-            #[cfg(target_os = "macos")]
-            let launch_event = login_item::launch_event_text();
-            let data_dir = app.path().app_data_dir()?;
-            let home_dir = app.path().home_dir()?;
-            let bridge = Arc::new(TauriBridge { app: app.handle().clone() });
-            let opts = StartOptions { data_dir, home_dir, shared_root: None, port: None, local_port: 0, upload_reserve: None };
-            let server = tauri::async_runtime::block_on(crate::core::start(opts, bridge))?;
-            // Before the window can ask: an upgrade's uninstaller removed launch at login.
-            #[cfg(windows)]
-            if let Some(stamp) = login_item_windows::install_stamp() {
-                let installed_since = server.state.note_install(&stamp);
-                if server.state.login_item_chosen() && !login_item_windows::restore(installed_since) {
-                    server.state.set_login_item_chosen(false);
-                }
+            // Never an Err: Tauri turns it into a panic, which says nothing in a release build.
+            if let Err(e) = setup(app) {
+                startup_failed(e);
             }
-            create_window(app.handle(), &server, !hidden)?;
-            tray::create(app, server.state.clone())?;
-            let state = server.state.clone();
-            #[cfg(target_os = "macos")]
-            {
-                let st = state.clone();
-                mac_notify::set_handler(move |r| {
-                    let st = st.clone();
-                    tauri::async_runtime::spawn(async move { core::quick::on_notification(&st, r.action, r.message_id, r.device_id.as_deref()).await });
-                });
-            }
-            plugin_notify::on_action(app.handle(), state.clone());
-            // The saved shortcut; the plugin works on the main thread, so not from here.
-            let (st, handle) = (state.clone(), app.handle().clone());
-            tauri::async_runtime::spawn_blocking(move || {
-                if let Some(saved) = st.clipboard_shortcut()
-                    && let Err(e) = shortcut::set(&handle, Some(&saved))
-                {
-                    tracing::warn!("the saved global shortcut could not be registered");
-                    st.set_shortcut_error(Some(e));
-                }
-                st.unread_changed();
-            });
-            #[cfg(target_os = "macos")]
-            {
-                if hidden {
-                    // Menu bar icon only: no Dock icon until the window opens,
-                    // and the app does not keep focus at login.
-                    DOCK_VISIBLE.store(false, Ordering::SeqCst);
-                    let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    let _ = app.handle().hide();
-                }
-                tauri::async_runtime::spawn_blocking(move || {
-                    let state = login_item::state();
-                    login_item::sync_relaunch_on_login(state == login_item::LoginItem::On);
-                    // e.g. "launch at login: on; hidden start: Some("login item"); launch event: aevt/oapp prdt=lgit"
-                    tracing::info!(
-                        "launch at login: {}; hidden start: {hidden_reason:?}; launch event: {launch_event}; {}",
-                        state.as_str(),
-                        login_item::diagnostics()
-                    );
-                });
-            }
-            app.manage(server);
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to start LanShare");
+        .unwrap_or_else(|e| startup_failed(e.into()));
 
     // `_app` is only needed for the macOS Dock "reopen" event.
     app.run(|_app, event| match event {
@@ -383,4 +322,124 @@ pub fn run() {
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         _ => {}
     });
+}
+
+/// Starts the server, the window and the tray icon.
+fn setup(app: &tauri::App) -> anyhow::Result<()> {
+    // First: on macOS the login-item flag is only readable right now.
+    let hidden_reason = hidden_start_reason();
+    let hidden = hidden_reason.is_some();
+    // Before the server starts: a click on a notification that relaunched
+    // LanShare is delivered right after this returns, and waits until then.
+    #[cfg(target_os = "macos")]
+    mac_notify::install();
+    #[cfg(target_os = "macos")]
+    let launch_event = login_item::launch_event_text();
+    let data_dir = app.path().app_data_dir().context("find the app data folder")?;
+    let home_dir = app.path().home_dir().context("find the home folder")?;
+    let bridge = Arc::new(TauriBridge { app: app.handle().clone() });
+    let opts = StartOptions { data_dir, home_dir, shared_root: None, port: None, local_port: 0, upload_reserve: None };
+    let server = tauri::async_runtime::block_on(crate::core::start(opts, bridge))?;
+    // Before the window can ask: an upgrade's uninstaller removed launch at login.
+    #[cfg(windows)]
+    if let Some(stamp) = login_item_windows::install_stamp() {
+        let installed_since = server.state.note_install(&stamp);
+        if server.state.login_item_chosen() && !login_item_windows::restore(installed_since) {
+            server.state.set_login_item_chosen(false);
+        }
+    }
+    create_window(app.handle(), &server, !hidden).context("open the window")?;
+    tray::create(app, server.state.clone()).context("create the tray icon")?;
+    let state = server.state.clone();
+    #[cfg(target_os = "macos")]
+    {
+        let st = state.clone();
+        mac_notify::set_handler(move |r| {
+            let st = st.clone();
+            tauri::async_runtime::spawn(async move { core::quick::on_notification(&st, r.action, r.message_id, r.device_id.as_deref()).await });
+        });
+    }
+    plugin_notify::on_action(app.handle(), state.clone());
+    // The saved shortcut; the plugin works on the main thread, so not from here.
+    let (st, handle) = (state.clone(), app.handle().clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(saved) = st.clipboard_shortcut()
+            && let Err(e) = shortcut::set(&handle, Some(&saved))
+        {
+            tracing::warn!("the saved global shortcut could not be registered");
+            st.set_shortcut_error(Some(e));
+        }
+        st.unread_changed();
+    });
+    #[cfg(target_os = "macos")]
+    {
+        if hidden {
+            // Menu bar icon only: no Dock icon until the window opens,
+            // and the app does not keep focus at login.
+            DOCK_VISIBLE.store(false, Ordering::SeqCst);
+            let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let _ = app.handle().hide();
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = login_item::state();
+            login_item::sync_relaunch_on_login(state == login_item::LoginItem::On);
+            // e.g. "launch at login: on; hidden start: Some("login item"); launch event: aevt/oapp prdt=lgit"
+            tracing::info!(
+                "launch at login: {}; hidden start: {hidden_reason:?}; launch event: {launch_event}; {}",
+                state.as_str(),
+                login_item::diagnostics()
+            );
+        });
+    }
+    app.manage(server);
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", windows))]
+const STARTUP_FAILED: &str = "LanShare 无法启动";
+
+/// LanShare cannot start: says why in the log and, on macOS and Windows, in
+/// an alert, since release builds have no console; then exits. The errors
+/// that reach here name no paths, so the alert and the log can show them as
+/// they are (core::logging).
+fn startup_failed(why: anyhow::Error) -> ! {
+    tracing::error!("LanShare could not start: {why:#}");
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        // None when the start failed before the log file was opened.
+        let logs = crate::core::logging::dir();
+        let mut text = format!("LanShare 启动时出错，无法继续运行。\n\n原因：{why:#}");
+        if logs.is_some() {
+            text.push_str("\n\n日志里有详细情况，报告问题时可以附上；日志不含消息内容和文件名。");
+        }
+        if startup_alert(&text, logs.is_some())
+            && let Some(dir) = logs
+        {
+            let _ = tauri_plugin_opener::open_path(crate::core::paths::shell_path(&dir), None::<&str>);
+        }
+    }
+    std::process::exit(1)
+}
+
+/// True if the user asked for the log folder. Without a parent window rfd
+/// shows a CFUserNotification alert, which needs no window and no running
+/// event loop.
+#[cfg(target_os = "macos")]
+fn startup_alert(text: &str, offer_logs: bool) -> bool {
+    use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+    const OPEN_LOGS: &str = "打开日志文件夹";
+    let buttons = if offer_logs { MessageButtons::OkCancelCustom(OPEN_LOGS.into(), "退出".into()) } else { MessageButtons::OkCustom("退出".into()) };
+    let answer = MessageDialog::new().set_level(MessageLevel::Error).set_title(STARTUP_FAILED).set_description(text).set_buttons(buttons).show();
+    matches!(answer, MessageDialogResult::Custom(b) if b == OPEN_LOGS)
+}
+
+/// True if the user asked for the log folder.
+#[cfg(windows)]
+fn startup_alert(text: &str, offer_logs: bool) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW};
+    let (text, buttons) = if offer_logs { (format!("{text}\n\n要打开日志文件夹吗？"), MB_YESNO) } else { (text.to_string(), MB_OK) };
+    let (text, title) = (login_item_windows::wide(&text), login_item_windows::wide(STARTUP_FAILED));
+    // Topmost: at a login start LanShare may not be allowed to take the foreground.
+    // SAFETY: both strings are NUL-terminated UTF-16 and outlive the call; there is no owner window.
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), buttons | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) == IDYES }
 }

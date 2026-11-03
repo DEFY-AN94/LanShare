@@ -618,6 +618,7 @@ Windows features are still built, and CI builds and tests every change on Window
 - From M7: with a 1-minute idle-sleep setting, a 3-minute upload completes (`SetThreadExecutionState`); with the shared folder on a FAT32 USB stick, a file over 4 GB is refused
 - From M8: clicking a toast, or clicking it later in Action Center, opens that conversation; the toast's **复制** (Copy) and **打开** (Open) buttons and its sound; the unread count in the tray tooltip; the tray items that copy the latest text and send the clipboard (a screenshot arrives as a PNG; a file copied in Explorer is refused as a file); the shortcut recorder on a non-US layout; launch at login (Run key), still on after installing the next version over it with the default choice, and removed on uninstall. Record any differences from the Mac
 - A `config.json` cut off part way: LanShare starts paused, Settings shows the notice and `config.json.bad` holds the cut-off file; pausing from the tray still responds at once (each save now waits for the disk)
+- A start that fails (for example with a damaged `lanshare.db`): the alert **LanShare 无法启动** (LanShare cannot start) gives the reason and is on top of other windows, also at a login start (`--background`); **是** (Yes) opens the log folder; LanShare then exits with code 1 and the log has the reason
 - From M9: the `.local` URL either works or is not offered
 - Record the results in section 4.2, in the same format as the 4.1.1 table
 

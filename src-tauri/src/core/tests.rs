@@ -1152,6 +1152,28 @@ async fn resuming_after_an_unreadable_config_lasts() {
     assert_eq!(std::fs::read(e.state.data_dir.join("config.json.bad")).unwrap(), b"{\n  \"paused\": false,\n  \"port\": 392");
 }
 
+/// What a start that fails shows and logs (lib.rs) names no folder.
+#[tokio::test]
+async fn a_failed_start_names_no_path() {
+    let dir = tempfile::Builder::new().prefix("LOGMARK-").tempdir().unwrap();
+    let home = dir.path().join("LOGMARK-home");
+    std::fs::create_dir(&home).unwrap();
+    // A file where the app data folder belongs: the start ends before it opens anything.
+    let data_dir = home.join("LOGMARK-data");
+    std::fs::write(&data_dir, "").unwrap();
+    let opts = super::StartOptions { data_dir: data_dir.clone(), home_dir: home.clone(), shared_root: None, port: None, local_port: 0, upload_reserve: None };
+    let Err(e) = super::start(opts, Arc::new(HeadlessBridge)).await else { panic!("a start without its data folder must fail") };
+    let why = format!("{e:#}");
+    assert!(why.starts_with("create the app data folder: ") && !why.contains("LOGMARK"), "{why}");
+
+    // A file where ~/LanShare belongs.
+    std::fs::write(home.join("LanShare"), "").unwrap();
+    let mut config = Config::with_root(home.join("LanShare"));
+    let Err(e) = super::open_shared_folder(&mut config, &home, &data_dir) else { panic!("a default folder that cannot be created must fail") };
+    let why = format!("{e:#}");
+    assert!(why.starts_with("create the default shared folder: ") && !why.contains("LOGMARK"), "{why}");
+}
+
 #[tokio::test]
 async fn static_shell_has_security_headers() {
     let e = env();
