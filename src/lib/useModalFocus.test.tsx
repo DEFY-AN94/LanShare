@@ -55,13 +55,17 @@ describe("useModalFocus", () => {
     expect(document.activeElement).toBe(byText("添加设备"));
   });
 
-  it("a dialog that opens under another one waits for it", () => {
-    const page = render(<Page lower={false} upper />);
+  it("a dialog that opens under another one waits for it, then gives focus back where that one would", () => {
+    const page = render(<Page lower={false} upper={false} />);
+    byText("添加设备")!.focus();
+    page.rerender(<Page lower={false} upper />);
     expect(document.activeElement).toBe(dialog("B"));
     page.rerender(<Page lower upper />);
     expect(document.activeElement).toBe(dialog("B"));
     page.rerender(<Page lower upper={false} />);
     expect(document.activeElement).toBe(dialog("A"));
+    page.rerender(<Page lower={false} upper={false} />);
+    expect(document.activeElement).toBe(byText("添加设备"));
   });
 
   it("one Escape closes only the dialog on top, also when the one below opened later", () => {

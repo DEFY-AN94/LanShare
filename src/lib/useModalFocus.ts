@@ -15,6 +15,8 @@ const FOCUSABLE =
 
 interface OpenDialog {
   el: HTMLElement;
+  /** Where focus goes when it closes. */
+  back: HTMLElement | null;
   onKey: (e: KeyboardEvent) => void;
 }
 
@@ -63,6 +65,7 @@ export function useModalFocus(ref: RefObject<HTMLElement | null>, opts: { initia
     const keep = coarsePointer() && !!back?.matches("input, textarea, select");
     const self: OpenDialog = {
       el,
+      back,
       onKey: (e) => {
         if (e.isComposing || e.keyCode === 229) return;
         if (e.key === "Escape" && onEscape.current) {
@@ -76,7 +79,11 @@ export function useModalFocus(ref: RefObject<HTMLElement | null>, opts: { initia
     };
     open.push(self);
     if (open.length === 1) window.addEventListener("keydown", onKeyDown);
-    if (!keep && topModal() === self && !el.contains(back)) (initial?.current ?? el).focus({ preventScroll: true });
+    const top = topModal();
+    // One that opens under another (a pairing request under a confirm) gives
+    // focus back where the one on top will, not into a dialog that is gone.
+    if (top && top !== self && top.el.contains(back)) self.back = top.back;
+    if (!keep && top === self && !el.contains(back)) (initial?.current ?? el).focus({ preventScroll: true });
 
     return () => {
       open.splice(open.indexOf(self), 1);
@@ -87,7 +94,7 @@ export function useModalFocus(ref: RefObject<HTMLElement | null>, opts: { initia
       if (active && active !== document.body && !el.contains(active)) return;
       // A dialog still open under this one takes it, unless focus came from there.
       const below = topModal()?.el;
-      const target = below && !below.contains(back) ? below : back;
+      const target = below && !below.contains(self.back) ? below : self.back;
       if (target?.isConnected) target.focus({ preventScroll: true });
     };
   }, [ref, initial]);
