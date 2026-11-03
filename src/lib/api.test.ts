@@ -1,4 +1,5 @@
-// What a raw upload puts on the wire, and how it ends when it stalls or is cancelled.
+// What a raw upload puts on the wire, and how it ends when it stalls or is
+// cancelled; how a request ends when its reply stops arriving or is not JSON.
 
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -105,4 +106,60 @@ it("does not count time with the page hidden, and gives a resumed upload 10 s to
   expect(error).toBeUndefined();
   await vi.advanceTimersByTimeAsync(4_000);
   expect(error).toMatchObject({ status: 0 });
+});
+
+/** A reply with this status whose headers arrive and whose body never does; an abort ends the body read, as in a browser. */
+function stallingBody(status: number) {
+  vi.useFakeTimers();
+  Object.assign(globalThis, {
+    window: { setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (t: number) => clearTimeout(t) },
+    fetch: vi.fn(async (_url: string, init: RequestInit) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")))),
+    })),
+  });
+}
+
+it.each([
+  ["a page", 200, { status: 0, message: "连接不上电脑，请检查是否在同一个 Wi-Fi" }],
+  ["an error", 500, { status: 500, message: "请求失败（500）" }],
+])("gives up on %s whose body stops arriving after the headers, as on a lost connection", async (_what, status, expected) => {
+  stallingBody(status);
+  const { api, ApiError } = await import("./api");
+  let error: unknown;
+  void api.get("/api/messages?limit=50", 1_000).catch((e) => (error = e));
+  await vi.advanceTimersByTimeAsync(999);
+  expect(error).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(error).toBeInstanceOf(ApiError);
+  expect(error).toMatchObject(expected);
+});
+
+it("says so when a reply is not the JSON it claims to be", async () => {
+  Object.assign(globalThis, {
+    window: { setTimeout: () => 0, clearTimeout: () => undefined },
+    fetch: vi.fn(async () => new Response("{not json", { headers: { "content-type": "application/json" } })),
+  });
+  const { api, ApiError } = await import("./api");
+  const reply = api.get("/api/messages?limit=50");
+  await expect(reply).rejects.toBeInstanceOf(ApiError);
+  await expect(reply).rejects.toMatchObject({ status: 200, message: "服务器返回了无法识别的内容" });
+});
+
+it("says so too in Safari, which reports such a reply as a DOMException", async () => {
+  Object.assign(globalThis, {
+    window: { setTimeout: () => 0, clearTimeout: () => undefined },
+    fetch: vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: () => Promise.reject(new DOMException("The string did not match the expected pattern.", "SyntaxError")),
+    })),
+  });
+  const { api, ApiError } = await import("./api");
+  const reply = api.get("/api/messages?limit=50");
+  await expect(reply).rejects.toBeInstanceOf(ApiError);
+  await expect(reply).rejects.toMatchObject({ status: 200, message: "服务器返回了无法识别的内容" });
 });
