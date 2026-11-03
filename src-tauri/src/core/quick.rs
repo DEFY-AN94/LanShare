@@ -25,8 +25,8 @@ pub const ACTION_SHOW: &str = "show";
 pub const ACTION_DISMISS: &str = "dismiss";
 
 /// The types 打开 opens directly, in lowercase: the formats phones commonly
-/// send, opened in their own apps, where Office and WPS check files that
-/// carry the download mark themselves. Macro-enabled and slideshow formats
+/// send. Each opens in its own app, and Office and WPS apply their own checks
+/// to files that carry the download mark. Macro-enabled and slideshow formats
 /// (docm, xlsm, pptm, xlsb, dotm, pps, ppsx) are left out, because they exist
 /// to run macros or start a show.
 const OPENABLE: &[&str] = &[
@@ -40,9 +40,10 @@ const OPENABLE: &[&str] = &[
     "zip", "rar", "7z", "tar", "gz", "tgz",
 ];
 
-/// Whether 打开 opens `path` with the default app. Any other file, whatever
-/// its type, is only shown in its folder. The last extension decides, as it
-/// does for the system; on Unix a file marked executable is only shown too.
+/// Whether 打开 opens `path` with the default app. A file opens only when its
+/// type is on `OPENABLE`; any other file is only shown in its folder. The last
+/// extension decides, as it does for the system; on Unix a file marked
+/// executable is only shown too.
 pub(crate) fn opens_directly(path: &Path) -> bool {
     let ext = path.extension();
     // On a Mac an extension can make a folder an app, installer or disk image.
